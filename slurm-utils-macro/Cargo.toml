@@ -1,0 +1,14 @@
+[package]
+authors = ["Me <Me>"]
+edition = "2018"
+name = "slurm-utils-macro"
+version = "0.1.0"
+
+[dependencies]
+darling = "*"
+proc-macro2 = "*"
+quote = "*"
+syn = "*"
+
+[lib]
+proc-macro = true

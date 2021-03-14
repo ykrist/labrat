@@ -1,0 +1,13 @@
+[package]
+authors = ["Me <Me>"]
+edition = "2018"
+name = "slurm-harray"
+version = "0.1.0"
+[dependencies]
+anyhow = "*"
+clap = "*"
+json = "*"
+siphasher = "*"
+
+[dependencies.slurm-utils-macro]
+path = "./slurm-utils-macro"
