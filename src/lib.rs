@@ -1,16 +1,15 @@
 mod experiment;
-mod hash;
 
 pub use experiment::*;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::io::{Read, Write};
-use std::process::exit;
-use std::ops::Deref;
-use json::JsonValue;
+use std::io::{Read};
 use std::fs::File;
 use std::os::unix::io::{FromRawFd, RawFd};
 use anyhow::{Result, Context};
+use serde::{Serialize, Deserialize};
+use std::process::exit;
+
 pub use slurm_utils_macro::*;
 
 
@@ -68,17 +67,20 @@ impl ToString for MailType {
 }
 
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct SlurmResources {
     script: String,
     log_err: PathBuf,
     log_out: PathBuf,
+    #[serde(skip_serializing_if="Option::is_none")]
     job_name: Option<String>,
     cpus: usize,
     nodes: usize,
     time: String,
     memory: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     mail_user: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     mail_type: Option<String>,
 }
 
@@ -93,7 +95,7 @@ fn fmt_as_slurm_time(mut secs: u64) -> String {
 }
 
 impl SlurmResources {
-    pub fn get<T>(exp: &impl ResourcePolicy<T>) -> Self {
+    pub fn get(exp: &impl ResourcePolicy) -> Self {
         let mail_type = {
             let mt = exp.mail_type();
             if mt.is_empty() {
@@ -117,80 +119,39 @@ impl SlurmResources {
             nodes: exp.nodes(),
         }
     }
-
-    pub fn json(&self) -> json::JsonValue {
-        let mut obj = json::object! {
-            time: self.time.clone(),
-            memory: self.memory.clone(),
-            script: self.script.clone(),
-            log_err: logpath_to_json_val(&self.log_err),
-            log_out: logpath_to_json_val(&self.log_out),
-            cpus: self.cpus,
-            nodes: self.nodes,
-        };
-        match &mut obj {
-            json::JsonValue::Object(obj) => {
-                if let Some(n) = &self.job_name {
-                    obj.insert("job_name", n.deref().into())
-                }
-                if let Some(u) = &self.mail_user {
-                    obj.insert("mail_user", u.deref().into())
-                }
-                if let Some(t) = &self.mail_type {
-                    obj.insert("mail_type", t.deref().into())
-                }
-            }
-            _ => unreachable!(),
-        }
-        obj
-    }
 }
 
 
-pub trait ResourcePolicy<T> {
-    fn log_err(&self) -> PathBuf;
-    fn log_out(&self) -> PathBuf;
+pub trait ResourcePolicy: Experiment {
     fn script(&self) -> String;
     fn time(&self) -> Duration;
     fn memory(&self) -> MemoryAmount;
     fn cpus(&self) -> usize { 1 }
     fn nodes(&self) -> usize { 1 }
-    fn job_name(&self) -> Option<String> { None }
+    fn job_name(&self) -> Option<String> {
+        Some(self.parameters().id_str())
+    }
     fn mail_user(&self) -> Option<String> { None }
     fn mail_type(&self) -> Vec<MailType> { Vec::new() }
-}
-
-fn logpath_to_json_val(p: &PathBuf) -> json::JsonValue {
-    if let Some(logdir) = p.parent() {
-        match std::fs::create_dir_all(logdir) {
-            Ok(_) => {}
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::AlreadyExists => {}
-                other => panic!("{}", e)
-            }
-        }
-        let mut logdir = logdir.canonicalize().unwrap();
-        logdir.push(p.file_name().unwrap());
-        logdir.to_string_lossy()
-            .into_owned()
-            .into()
-    } else {
-        p.to_string_lossy()
-            .into_owned()
-            .into()
+    fn log_err(&self) -> PathBuf {
+        self.get_output_path(&format!("{}.err", self.inputs().id_str()))
+    }
+    fn log_out(&self) -> PathBuf {
+        self.get_output_path(&format!("{}.out", self.inputs().id_str()))
     }
 }
 
 
+
 fn run_pipe_server<I, P, O, T>(read_fd: RawFd, write_fd: RawFd, app: clap::App) -> Result<()>
     where
-        I: ExpInputs,
-        P: ExpParameters,
-        O: ExpOutputs<Inputs=I, Params=P>,
-        Experiment<I, P, O>: ResourcePolicy<T>
+      T: From<ExpInner<I, P, O>> + ResourcePolicy,
+      I: ExpInputs,
+      P: ExpParameters,
+      O: ExpOutputs<Inputs=I, Params=P>,
 {
     let mut reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
-    let mut writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
+    let writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
 
     let mut cl_args = String::new();
     reader.read_to_string(&mut cl_args)?;
@@ -202,20 +163,20 @@ fn run_pipe_server<I, P, O, T>(read_fd: RawFd, write_fd: RawFd, app: clap::App) 
         let args = app.clone().get_matches_from(
             [q].iter().copied().chain(cmd.split_whitespace())
         );
-        let exp = Experiment::<I, P, O>::from_args(&args)?;
-        outputs.push(SlurmResources::get(&exp).json())
+        let exp = T::from(ExpInner::<I, P, O>::from_args(&args)?);
+        outputs.push(SlurmResources::get(&exp))
     }
 
-    writer.write(JsonValue::from(outputs).dump().as_bytes())?;
+    serde_json::to_writer(writer, &outputs)?;
     Ok(())
 }
 
-pub fn handle_slurm_args<I, P, O, T>() -> Result<Experiment<I, P, O>>
+pub fn handle_slurm_args<'de, I, P, O, T>() -> Result<T>
     where
+        T: From<ExpInner<I, P, O>> + ResourcePolicy,
         I: ExpInputs,
-        P: ExpParameters,
+        P: ExpParameters + Deserialize<'de>,
         O: ExpOutputs<Inputs=I, Params=P>,
-        Experiment<I, P, O>: ResourcePolicy<T>,
 {
     let app = clap::App::new("")
         .arg(clap::Arg::with_name("slurm-pipe")
@@ -239,15 +200,15 @@ pub fn handle_slurm_args<I, P, O, T>() -> Result<Experiment<I, P, O>>
         let read_fd: RawFd = rawfds.next().unwrap().parse().context("parsing `R`")?;
         let write_fd: RawFd = rawfds.next().unwrap().parse().context("parsing `W`")?;
         debug_assert_eq!(rawfds.next(), None);
-        run_pipe_server::<I, P, O, T>(read_fd, write_fd, app);
+        run_pipe_server::<I, P, O, T>(read_fd, write_fd, app)?;
         exit(0)
     }
 
-    let exp = Experiment::from_args(&args)?;
+    let exp = T::from(ExpInner::from_args(&args)?);
 
     if args.is_present("slurm-info") {
-        println!("{}", SlurmResources::get(&exp).json().dump());
+        println!("{}", serde_json::to_string_pretty(&SlurmResources::get(&exp))?);
         exit(0);
     }
-    Ok(exp)
+    Ok(exp.into())
 }

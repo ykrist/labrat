@@ -1,30 +1,51 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
-use slurm_harray::{ExpOutputs, ExpInputs, ExpParameters, AddArgs, FromArgs, ResourcePolicy, MemoryAmount, handle_slurm_args};
-use std::path::PathBuf;
-use anyhow::{Result, Context};
+use slurm_harray::{ExpOutputs, ExpInputs, ExpParameters, AddArgs, FromArgs, ResourcePolicy, MemoryAmount, handle_slurm_args, define_experiment, Experiment, id_from_serialised};
+use std::path::{PathBuf};
+use anyhow::{Result};
 use std::time::Duration;
+use serde::{Deserialize, Serialize};
 
-#[derive(ExpInputs)]
+#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
+#[slurm(inputs)]
 struct Inputs {
+    index: u64,
     #[slurm(default="1.0")]
     tw_scale: f64,
-    index: u64,
 }
 
-#[derive(ExpParameters)]
+impl ExpInputs for Inputs {
+    fn id_str(&self) -> String {
+        format!("IDX{:03}_TW{:06}", self.index, (self.tw_scale*1000.0).round() as u64)
+    }
+}
+
+#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
+#[slurm(parameters)]
 struct Params {
     #[slurm(argname="eps")]
     epsilon: f64,
     cpus: u16,
+    param_name: String,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params{ epsilon: 0.0001, cpus: 1 }
+        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new() }
     }
 }
 
+impl ExpParameters for Params {
+    fn id_str(&self) -> String {
+        if self.param_name.is_empty() {
+            id_from_serialised(self)
+        } else {
+            self.param_name.clone()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct Outputs {
     log: PathBuf,
 }
@@ -34,27 +55,34 @@ impl ExpOutputs for Outputs {
     type Params = Params;
 
     fn new(inputs: &Inputs, _params: &Params) -> Self {
-        let filename = format!("scrap/{}.json", inputs.index);
+        let filename = format!("{}-sollog.json", inputs.id_str());
         Outputs {
             log: filename.into()
         }
     }
 }
 
-type MyExperiment = slurm_harray::Experiment<Inputs, Params, Outputs>;
-struct Simple;
-impl ResourcePolicy<Simple> for MyExperiment {
+define_experiment!{ struct MyExperiment, Inputs, Params, Outputs }
+
+impl Experiment for MyExperiment {
+    fn log_root_dir() -> PathBuf {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
+    }
+}
+
+impl ResourcePolicy for MyExperiment {
     fn time(&self) -> Duration { Duration::from_secs(300 + 60*(self.inputs.index/10)) }
     fn memory(&self) -> MemoryAmount { MemoryAmount::from_gb(4) }
     fn script(&self) -> String { String::from("#!/bin/bash\n") }
-    fn log_err(&self) -> PathBuf { format!("./logs/{}.out", self.inputs.index).into() }
-    fn log_out(&self) -> PathBuf { format!("./logs/{}.err", self.inputs.index).into() }
     fn job_name(&self) -> Option<String> { Some(String::from("hello world"))}
 }
 
 fn main() -> Result<()> {
-    let _exp: MyExperiment = handle_slurm_args()?;
+    let exp: MyExperiment = handle_slurm_args()?;
+    exp.write_index_file()?;
+    exp.write_parameter_file()?;
 
+    println!("Inputs:\n{}", serde_json::to_string_pretty(&exp.inputs).unwrap());
+    println!("Parameters:\n{}", serde_json::to_string_pretty(&exp.parameters).unwrap());
     Ok(())
-
 }
