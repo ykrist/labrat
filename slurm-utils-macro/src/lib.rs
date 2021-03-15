@@ -189,6 +189,7 @@ fn get_from_args_input_impl(ident: &syn::Ident, fields: &Fields<InputField>) -> 
 
 
 fn get_from_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) -> Result<TokenStream> {
+  // TODO allow user to use Option<T> fields where T: FromStr, and default to None.
   let mut field_argids = Vec::with_capacity(fields.len());
   let mut field_argnames = Vec::with_capacity(fields.len());
   let mut field_names = Vec::with_capacity(fields.len());
