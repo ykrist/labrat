@@ -43,7 +43,7 @@ pub trait Experiment : ExperimentAuto {
     fn log_root_dir() -> PathBuf;
 
     fn get_output_path(&self, filename: &str) -> PathBuf {
-        let mut log_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/logs/"));
+        let mut log_dir = Self::log_root_dir();
         log_dir.push(self.parameters().id_str());
         let mut log_dir = ensure_directory_exists(log_dir).unwrap();
         log_dir.push(filename);
