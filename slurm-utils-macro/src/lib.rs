@@ -28,19 +28,6 @@ impl From<syn::Error> for CompileError {
 }
 
 
-trait Argname {
-  fn get_argname(&self) -> Option<&String>;
-  fn get_ident(&self) -> &syn::Ident;
-  fn argname_or_default(&self) -> syn::LitStr {
-    let ident = self.get_ident();
-    if let Some(argname) = self.get_argname() {
-      syn::LitStr::new(argname, ident.span())
-    } else {
-      syn::LitStr::new(&ident.to_string().replace("_", "-"), ident.span())
-    }
-  }
-}
-
 #[derive(Debug, FromField)]
 #[darling(attributes(slurm))]
 struct InputField {
@@ -50,12 +37,46 @@ struct InputField {
   pub default: Option<String>,
   #[darling(default)]
   pub argname: Option<String>,
+  #[darling(default)]
+  pub help: Option<String>,
+  #[darling(default)]
+  pub valname: Option<String>,
 }
 
-impl Argname for InputField {
-  fn get_argname(&self) -> Option<&String> { self.argname.as_ref() }
-  fn get_ident(&self) -> &syn::Ident { self.ident.as_ref().unwrap() }
+
+trait FieldShared {
+  fn ident(&self) -> &syn::Ident;
+
+  fn ty(&self) -> &syn::Type;
+
+  fn default(&self) -> Option<&str>;
+
+  fn help(&self) -> Option<&str>;
+
+  fn valname(&self) -> Option<&str>;
+
+  fn argname(&self) -> Option<&str>;
+
+  fn argname_or_default(&self) -> syn::LitStr {
+    let ident = self.ident();
+    if let Some(argname) = self.argname() {
+      syn::LitStr::new(argname, ident.span())
+    } else {
+      syn::LitStr::new(&ident.to_string().replace("_", "-"), ident.span())
+    }
+  }
 }
+
+
+impl FieldShared for InputField {
+  fn ident(&self) -> &syn::Ident { self.ident.as_ref().unwrap() }
+  fn ty(&self) -> &syn::Type { &self.ty }
+  fn help(&self) -> Option<&str> { self.help.as_ref().map(std::ops::Deref::deref) }
+  fn default(&self) -> Option<&str> { self.default.as_ref().map(std::ops::Deref::deref) }
+  fn valname(&self) -> Option<&str> { self.valname.as_ref().map(std::ops::Deref::deref) }
+  fn argname(&self) -> Option<&str> { self.argname.as_ref().map(std::ops::Deref::deref) }
+}
+
 
 #[derive(Debug, FromField)]
 #[darling(attributes(slurm))]
@@ -63,14 +84,24 @@ struct ParamsField {
   pub ident: Option<syn::Ident>,
   pub ty: syn::Type,
   #[darling(default)]
+  pub default: Option<String>,
+  #[darling(default)]
   pub argname: Option<String>,
+  #[darling(default)]
+  pub help: Option<String>,
+  #[darling(default)]
+  pub valname: Option<String>,
 }
 
-
-impl Argname for ParamsField {
-  fn get_argname(&self) -> Option<&String> { self.argname.as_ref() }
-  fn get_ident(&self) -> &syn::Ident { self.ident.as_ref().unwrap() }
+impl FieldShared for ParamsField {
+  fn ident(&self) -> &syn::Ident { self.ident.as_ref().unwrap() }
+  fn ty(&self) -> &syn::Type { &self.ty }
+  fn help(&self) -> Option<&str> { self.help.as_ref().map(std::ops::Deref::deref) }
+  fn default(&self) -> Option<&str> { self.default.as_ref().map(std::ops::Deref::deref) }
+  fn valname(&self) -> Option<&str> { self.valname.as_ref().map(std::ops::Deref::deref) }
+  fn argname(&self) -> Option<&str> { self.argname.as_ref().map(std::ops::Deref::deref) }
 }
+
 
 
 #[derive(Debug, FromDeriveInput)]
@@ -88,27 +119,81 @@ struct ParamsStruct {
   pub data: Data<darling::util::Ignored, ParamsField>,
 }
 
-
-#[derive(Debug, FromDeriveInput)]
-#[darling(supports(struct_named), attributes(slurm))]
-struct DeriveInputLookahead {
-  #[darling(default)]
-  pub inputs: bool,
-  #[darling(default)]
-  pub parameters: bool,
+fn ty_match_ident(ty: &syn::Type, names: &[&str]) -> bool {
+  if let syn::Type::Path(p) = ty {
+    if let Some(ident) = p.path.get_ident() {
+      for ty in names {
+        if ident == ty {
+          return true;
+        }
+      }
+    }
+  }
+  false
 }
 
+fn ty_is_primitive_int(ty: &syn::Type) -> bool {
+  ty_match_ident(ty, &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"])
+}
+
+fn ty_is_primitive_float(ty: &syn::Type) -> bool {
+  ty_match_ident(ty, &["f64", "f32"])
+}
+
+fn ty_is_primitive_bool(ty: &syn::Type) -> bool {
+  ty_match_ident(ty, &["bool"])
+}
+
+fn get_switch_argname(f: &impl FieldShared) -> Result<syn::LitStr> {
+  let ident = f.ident();
+  if let Some(argname) = f.argname() {
+    Ok(syn::LitStr::new(argname, ident.span()))
+  } else {
+    let default_val = f.default()
+      .map(|s| s.parse())
+      .unwrap_or(Ok(false))
+      .map_err(|e| {
+        let msg ="default must be `true` or `false` for bool switches";
+        CompileError::Syn(syn::Error::new_spanned(f.ident(), msg))
+      })?;
+    let mut name = String::new();
+    if default_val {
+      name.push_str("no-");
+    }
+    name.push_str(&ident.to_string().replace("_", "-"));
+    Ok(syn::LitStr::new(&name, ident.span()))
+  }
+}
+
+
+fn add_optional_args<F: FieldShared>(arg: &mut TokenStream, f: &F, rename_valname: bool) {
+  if let Some(help) = f.help() {
+    arg.append_all(quote! { .help(#help)  });
+  }
+
+  if let Some(name) = f.valname() {
+    arg.append_all(quote! { .value_name(#name)  });
+  } else if rename_valname {
+    if ty_is_primitive_int(f.ty()) {
+      arg.append_all(quote! { .value_name("N")  });
+    } else if ty_is_primitive_float(f.ty()) {
+      arg.append_all(quote! { .value_name("X")  });
+    }
+  }
+}
 
 
 fn get_add_args_input_impl(ident: &syn::Ident, fields: &Fields<InputField>) -> Result<TokenStream> {
   let mut args = Vec::with_capacity(fields.len());
   for f in fields.iter() {
-    let ident = f.ident.as_ref().unwrap();
+
+
+    let ident = f.ident();
     let argid = syn::LitStr::new(&ident.to_string(), ident.span());
 
     let mut arg = quote::quote! {
-            clap::Arg::with_name(#argid)
-        };
+      clap::Arg::with_name(#argid)
+    };
 
     if let Some(default) = &f.default {
       let default = syn::LitStr::new(default, ident.span());
@@ -117,9 +202,10 @@ fn get_add_args_input_impl(ident: &syn::Ident, fields: &Fields<InputField>) -> R
       let argname = f.argname_or_default();
       arg.append_all(quote! { .long(#argname) });
     } else {
-      arg.append_all(quote! { .required(true) })
+      arg.append_all(quote! { .required(true) });
     }
 
+    add_optional_args(&mut arg, f, false);
     args.push(arg);
   }
 
@@ -140,10 +226,17 @@ fn get_add_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) -> 
   for f in fields.iter() {
     let ident = f.ident.as_ref().unwrap();
     let argid = syn::LitStr::new(&ident.to_string(), ident.span());
-    let argname = f.argname_or_default();
-    args.push(quote! {
-            clap::Arg::with_name(#argid).long(#argname).takes_value(true)
-        });
+
+    let mut arg = if ty_is_primitive_bool(f.ty()) {
+      let argname = get_switch_argname(f)?;
+      quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(false) }
+    } else {
+      let argname = f.argname_or_default();
+      quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(true) }
+    };
+
+    add_optional_args(&mut arg, f, false);
+    args.push(arg);
   }
 
   let ts = quote! {
@@ -161,13 +254,13 @@ fn get_from_args_input_impl(ident: &syn::Ident, fields: &Fields<InputField>) -> 
   let mut field_defs = Vec::with_capacity(fields.len());
   let mut field_names = Vec::with_capacity(fields.len());
   for f in fields.iter() {
-    let ident = f.ident.as_ref().unwrap();
+    let ident = f.ident();
     field_names.push(ident);
 
     let argid = syn::LitStr::new(&ident.to_string(), ident.span());
     let def = quote::quote! {
-            let #ident = args.value_of(#argid).unwrap().parse().context(concat!("parsing `", #argid, "`"))?;
-        };
+      let #ident = args.value_of(#argid).unwrap().parse().context(concat!("parsing `", #argid, "`"))?;
+    };
 
     field_defs.push(def)
   }
@@ -190,15 +283,27 @@ fn get_from_args_input_impl(ident: &syn::Ident, fields: &Fields<InputField>) -> 
 
 fn get_from_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) -> Result<TokenStream> {
   // TODO allow user to use Option<T> fields where T: FromStr, and default to None.
-  let mut field_argids = Vec::with_capacity(fields.len());
-  let mut field_argnames = Vec::with_capacity(fields.len());
-  let mut field_names = Vec::with_capacity(fields.len());
+  let mut parse_field = Vec::with_capacity(fields.len());
 
   for f in fields.iter() {
-    let ident = f.ident.as_ref().unwrap();
-    field_names.push(ident);
-    field_argids.push(syn::LitStr::new(&ident.to_string(), ident.span()));
-    field_argnames.push(f.argname_or_default())
+    let ident = f.ident();
+    let argid = syn::LitStr::new(&ident.to_string(), ident.span());
+
+    let ts = if ty_is_primitive_bool(f.ty()) {
+      quote! {
+        if args.is_present(#argid) {
+          params.#ident ^= true;
+        }
+      }
+    } else {
+      let argname = f.argname_or_default();
+      quote! {
+        if args.occurrences_of(#argid) > 0 {
+          params.#ident = args.value_of(#argid).unwrap().parse().context(concat!("parameter `", #argname, "`"))?;
+        }
+      }
+    };
+    parse_field.push(ts);
   }
 
   let ts = quote! {
@@ -206,12 +311,7 @@ fn get_from_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) ->
             fn from_args(args: &clap::ArgMatches) -> anyhow::Result<Self> {
                 use anyhow::Context;
                 let mut params = Self::default();
-
-                #(
-                    if args.occurrences_of(#field_argids) > 0 {
-                        params.#field_names = args.value_of(#field_argids).unwrap().parse().context(concat!("parameter `", #field_argnames, "`"))?;
-                    }
-                )*
+                #(#parse_field)*
                 Ok(params)
             }
         }
@@ -225,6 +325,16 @@ fn unwrap_fields<F>(data: &Data<darling::util::Ignored, F>) -> &Fields<F> {
     Data::Struct(fields) => fields,
     _ => unreachable!()
   }
+}
+
+
+#[derive(Debug, FromDeriveInput)]
+#[darling(supports(struct_named), attributes(slurm))]
+struct DeriveInputLookahead {
+  #[darling(default)]
+  pub inputs: bool,
+  #[darling(default)]
+  pub parameters: bool,
 }
 
 fn target_is_parameter_struct(derive_input: &syn::DeriveInput) -> Result<bool> {

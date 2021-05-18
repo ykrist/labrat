@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(inputs)]
 struct Inputs {
+    #[slurm(help="Dataset index")]
     index: u64,
-    #[slurm(default="1.0")]
+    #[slurm(default="1.0", help="Time window scale.", valname="S")]
     tw_scale: f64,
 }
 
@@ -23,15 +24,20 @@ impl ExpInputs for Inputs {
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(parameters)]
 struct Params {
-    #[slurm(argname="eps")]
+    #[slurm(argname="eps", default="0.0001")]
     epsilon: f64,
     cpus: u16,
+    #[slurm(default="true", help="disable frobbing")]
+    frob: bool,
+    #[slurm(help="turn on baz mode")]
+    baz: bool,
+    #[slurm(valname="name")]
     param_name: String,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new() }
+        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new(), frob: true, baz: false }
     }
 }
 
