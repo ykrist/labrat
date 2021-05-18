@@ -133,7 +133,7 @@ fn ty_match_ident(ty: &syn::Type, names: &[&str]) -> bool {
 }
 
 fn ty_is_primitive_int(ty: &syn::Type) -> bool {
-  ty_match_ident(ty, &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"])
+  ty_match_ident(ty, &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "usize", "isize"])
 }
 
 fn ty_is_primitive_float(ty: &syn::Type) -> bool {
@@ -152,7 +152,7 @@ fn get_switch_argname(f: &impl FieldShared) -> Result<syn::LitStr> {
     let default_val = f.default()
       .map(|s| s.parse())
       .unwrap_or(Ok(false))
-      .map_err(|e| {
+      .map_err(|_| {
         let msg ="default must be `true` or `false` for bool switches";
         CompileError::Syn(syn::Error::new_spanned(f.ident(), msg))
       })?;
@@ -235,7 +235,7 @@ fn get_add_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) -> 
       quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(true) }
     };
 
-    add_optional_args(&mut arg, f, false);
+    add_optional_args(&mut arg, f, true);
     args.push(arg);
   }
 

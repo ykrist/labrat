@@ -1,7 +1,6 @@
 use clap;
 use anyhow::{Context, Result};
 use serde::{Serialize};
-use std::convert::From;
 use sha2::Digest;
 use std::path::{PathBuf, Path};
 
