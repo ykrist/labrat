@@ -41,6 +41,8 @@ struct InputField {
   pub help: Option<String>,
   #[darling(default)]
   pub valname: Option<String>,
+  #[darling(default)]
+  pub choices: bool,
 }
 
 
@@ -65,6 +67,8 @@ trait FieldShared {
       syn::LitStr::new(&ident.to_string().replace("_", "-"), ident.span())
     }
   }
+
+  fn choices(&self) -> bool;
 }
 
 
@@ -75,6 +79,7 @@ impl FieldShared for InputField {
   fn default(&self) -> Option<&str> { self.default.as_ref().map(std::ops::Deref::deref) }
   fn valname(&self) -> Option<&str> { self.valname.as_ref().map(std::ops::Deref::deref) }
   fn argname(&self) -> Option<&str> { self.argname.as_ref().map(std::ops::Deref::deref) }
+  fn choices(&self) -> bool { self.choices }
 }
 
 
@@ -91,6 +96,8 @@ struct ParamsField {
   pub help: Option<String>,
   #[darling(default)]
   pub valname: Option<String>,
+  #[darling(default)]
+  pub choices: bool,
 }
 
 impl FieldShared for ParamsField {
@@ -100,6 +107,7 @@ impl FieldShared for ParamsField {
   fn default(&self) -> Option<&str> { self.default.as_ref().map(std::ops::Deref::deref) }
   fn valname(&self) -> Option<&str> { self.valname.as_ref().map(std::ops::Deref::deref) }
   fn argname(&self) -> Option<&str> { self.argname.as_ref().map(std::ops::Deref::deref) }
+  fn choices(&self) -> bool { self.choices }
 }
 
 
@@ -180,6 +188,12 @@ fn add_optional_args<F: FieldShared>(arg: &mut TokenStream, f: &F, rename_valnam
       arg.append_all(quote! { .value_name("X")  });
     }
   }
+
+  if f.choices() {
+    let t = f.ty();
+    arg.append_all( quote! { .possible_values( #t::arg_choices() )} )
+  }
+
 }
 
 
@@ -232,7 +246,13 @@ fn get_add_args_param_impl(ident: &syn::Ident, fields: &Fields<ParamsField>) -> 
       quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(false) }
     } else {
       let argname = f.argname_or_default();
-      quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(true) }
+      let mut arg = quote!{  clap::Arg::with_name(#argid).long(#argname).takes_value(true) };
+
+      if let Some(default) = &f.default {
+        let default = syn::LitStr::new(default, ident.span());
+        arg.append_all(quote! { .default_value(#default) });
+      }
+      arg
     };
 
     add_optional_args(&mut arg, f, true);

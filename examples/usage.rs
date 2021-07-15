@@ -1,10 +1,11 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
-use slurm_harray::{ExpOutputs, ExpInputs, ExpParameters, AddArgs, FromArgs, ResourcePolicy, MemoryAmount, handle_slurm_args, define_experiment, Experiment, id_from_serialised};
+use slurm_harray::*;
 use std::path::{PathBuf};
 use anyhow::{Result};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(inputs)]
@@ -21,6 +22,17 @@ impl ExpInputs for Inputs {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+enum Penum {
+  Foo,
+  Bar,
+}
+
+impl_arg_choices!{ Penum;
+  Foo = "foo",
+  Bar = "bar",
+}
+
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(parameters)]
 struct Params {
@@ -33,11 +45,13 @@ struct Params {
     baz: bool,
     #[slurm(valname="name")]
     param_name: String,
+    #[slurm(default="foo", choices)]
+    cat: Penum,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new(), frob: true, baz: false }
+        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new(), frob: true, baz: false, cat: Penum::Bar }
     }
 }
 

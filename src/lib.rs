@@ -11,6 +11,7 @@ use serde::{Serialize, Deserialize};
 use std::process::exit;
 
 pub use slurm_utils_macro::*;
+use std::str::FromStr;
 
 
 pub struct MemoryAmount(usize);
@@ -211,4 +212,37 @@ pub fn handle_slurm_args<'de, I, P, O, T>() -> Result<T>
         exit(0);
     }
     Ok(exp.into())
+}
+
+pub trait ArgChoices: FromStr {
+  fn arg_choices() -> &'static [&'static str] {
+    &[]
+  }
+}
+
+#[macro_export]
+macro_rules! impl_arg_choices {
+    ($ty:path;
+      $($variant:ident = $string:literal),+ $(,)?
+    ) => {
+      impl ArgChoices for $ty {
+        fn arg_choices() -> &'static [&'static str] {
+          &[
+            $($string),*
+          ]
+        }
+      }
+
+      impl FromStr for $ty {
+        type Err = anyhow::Error;
+        fn from_str(s: &str) -> Result<Self> {
+          let v = match s {
+            $($string => <$ty>::$variant,)*
+            _ => anyhow::bail!("failed to parse {} to {}", s, stringify!($ty)),
+          };
+          Ok(v)
+        }
+      }
+
+    };
 }
