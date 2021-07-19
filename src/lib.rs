@@ -1,18 +1,113 @@
-mod experiment;
-
-pub use experiment::*;
-use std::path::PathBuf;
 use std::time::Duration;
 use std::io::{Read};
 use std::fs::File;
 use std::os::unix::io::{FromRawFd, RawFd};
-use anyhow::{Result, Context};
-use serde::{Serialize, Deserialize};
 use std::process::exit;
+use structopt::*;
+use anyhow::{Result};
+use sha2::Digest;
+use std::path::{PathBuf, Path};
+use serde::de::DeserializeOwned;
 
-pub use slurm_utils_macro::*;
-use std::str::FromStr;
+pub use serde::{Serialize, Deserialize};
+pub use structopt::StructOpt;
+use structopt::StructOptInternal;
 
+pub trait NewOutput: Sized + Serialize + DeserializeOwned {
+    type Inputs;
+    type Params;
+    fn new(inputs: &Self::Inputs, params: &Self::Params) -> Self;
+}
+
+pub trait Experiment: Sized {
+    type Inputs: StructOptInternal + Serialize + DeserializeOwned + IdStr;
+    type Parameters: StructOptInternal + Serialize + DeserializeOwned + IdStr;
+    type Outputs: NewOutput<Inputs=Self::Inputs, Params=Self::Parameters>;
+
+    fn inputs(&self) -> &Self::Inputs;
+    fn outputs(&self) -> &Self::Outputs;
+    fn parameters(&self) -> &Self::Parameters;
+    fn log_root_dir() -> PathBuf;
+
+    fn new(inputs: Self::Inputs, parameters: Self::Parameters, outputs: Self::Outputs) -> Self;
+
+
+    fn get_output_path(&self, filename: &str) -> PathBuf {
+        let mut log_dir = Self::log_root_dir();
+        log_dir.push(self.parameters().id_str());
+        let mut log_dir = ensure_directory_exists(log_dir).unwrap();
+        log_dir.push(filename);
+        log_dir
+    }
+
+    fn get_output_path_prefix(&self, filename: &str) -> PathBuf {
+        let mut log_dir = Self::log_root_dir();
+        log_dir.push(self.parameters().id_str());
+        let mut log_dir = ensure_directory_exists(log_dir).unwrap();
+        log_dir.push(format!("{}-{}", self.inputs().id_str(), filename));
+        log_dir
+    }
+
+    fn write_index_file(&self) -> Result<()> {
+        let p = self.get_output_path(&format!("{}-index.json", self.inputs().id_str()));
+        let contents = serde_json::json!({
+            "input": self.inputs(),
+            "output" : self.outputs(),
+        });
+        let contents = serde_json::to_string_pretty(&contents)?;
+        std::fs::write(p, contents)?;
+        Ok(())
+    }
+
+    fn write_parameter_file(&self) -> Result<()> {
+        let p = self.get_output_path("parameters.json");
+        if !p.exists() {
+            std::fs::write(p, serde_json::to_string_pretty(self.parameters())?)?;
+        }
+        Ok(())
+    }
+
+    fn from_index_file(path: impl AsRef<Path>) -> Result<Self> {
+        #[derive(Debug, Clone, Deserialize)]
+        struct Index<I, O> {
+            input: I,
+            output: O,
+        }
+
+        let r = std::io::BufReader::new(std::fs::File::open(&path)?);
+        let index:  Index<Self::Inputs, Self::Outputs> = serde_json::from_reader(r)?;
+        let Index{ input, output } = index;
+        let r = std::io::BufReader::new(std::fs::File::open(
+            path.as_ref().with_file_name("parameters.json")
+        )?);
+        let params : Self::Parameters = serde_json::from_reader(r)?;
+        Ok(Self::new(input, params, output))
+    }
+}
+
+pub fn id_from_serialised<T: Serialize + ?Sized>(val: &T) -> String {
+    let mut hasher = sha2::Sha224::new();
+    hasher.update(&serde_json::to_string(val).unwrap());
+    base_62::encode(hasher.finalize().as_slice())
+}
+
+
+fn ensure_directory_exists(path: impl AsRef<Path>) -> Result<PathBuf> {
+    match std::fs::create_dir_all(path.as_ref()) {
+        Ok(()) => {}
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {},
+            _ => return Err(e.into()),
+        }
+    };
+    return Ok(path.as_ref().canonicalize().unwrap())
+}
+
+pub trait IdStr: Serialize {
+    fn id_str(&self) -> String {
+        id_from_serialised(self)
+    }
+}
 
 pub struct MemoryAmount(usize);
 
@@ -143,13 +238,119 @@ pub trait ResourcePolicy: Experiment {
 }
 
 
+pub trait ArgEnum: std::str::FromStr {
+    fn choices() -> &'static [&'static str];
+}
 
-fn run_pipe_server<I, P, O, T>(read_fd: RawFd, write_fd: RawFd, app: clap::App) -> Result<()>
+#[macro_export]
+macro_rules! impl_arg_enum {
+    ($ty:path;
+      $($variant:ident = $string:literal),+ $(,)?
+    ) => {
+      impl ::slurm_harray::ArgEnum for $ty {
+        fn choices() -> &'static [&'static str] {
+          &[
+            $($string),*
+          ]
+        }
+      }
+
+      impl ::std::str::FromStr for $ty {
+        type Err = String;
+        fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+          let v = match s {
+            $($string => <$ty>::$variant,)*
+            _ => return Err(format!("failed to parse {} to {}", s, stringify!($ty))),
+          };
+          Ok(v)
+        }
+      }
+    };
+}
+
+#[macro_export]
+macro_rules! impl_experiment {
+    (
+        $target:path;
+        $input:ident : $input_ty:path ;
+        $param:ident : $param_ty:path;
+        $output:ident : $output_ty:path;
+        $log_root:block
+    ) => {
+        impl ::slurm_harray::Experiment for $target {
+            type Inputs = $input_ty;
+            type Parameters = $param_ty;
+            type Outputs = $output_ty;
+
+            fn new(inputs: Self::Inputs, params: Self::Parameters, outputs: Self::Outputs) -> Self {
+               $target {
+                   $input: inputs,
+                   $param: params,
+                   $output: outputs
+               }
+            }
+
+            fn outputs(&self) -> &Self::Outputs {
+                &self.$output
+            }
+
+            fn inputs(&self) -> &Self::Inputs {
+               &self.$input
+            }
+
+            fn parameters(&self) -> &Self::Parameters {
+                &self.$param
+            }
+
+            fn log_root_dir() -> ::std::path::PathBuf $log_root
+        }
+    };
+}
+
+#[derive(StructOpt, Debug, Clone)]
+struct SlurmArgs {
+    /// Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)
+    #[structopt(
+        long="slurm-pipe",
+        number_of_values=2,
+        value_names=&["R", "W"],
+    )]
+    pipe: Option<Vec<RawFd>>,
+    /// Print Slurm info as a JSON string and exit.
+    #[structopt(long="slurm-info")]
+    info: bool,
+}
+
+#[derive(StructOpt, Debug, Clone)]
+struct NoSlurmArgs {}
+
+#[derive(StructOpt, Debug, Clone)]
+struct ClArgs<S: StructOpt, I: StructOpt, P: StructOpt> {
+    #[structopt(flatten)]
+    slurm: S,
+    #[structopt(flatten)]
+    inputs: I,
+    #[structopt(flatten)]
+    parameters: P,
+}
+
+impl<S: StructOpt, I: StructOpt, P: StructOpt> ClArgs<S, I, P> {
+    fn into_experiment<T>(self) -> T
+        where T: Experiment<Inputs=I, Parameters=P>
+    {
+        let ClArgs{ slurm: _, inputs, parameters } = self;
+        new_experiment(inputs, parameters)
+    }
+}
+
+fn new_experiment<T: Experiment>(inputs: T::Inputs, params: T::Parameters) -> T {
+    let outputs = T::Outputs::new(&inputs, &params);
+    T::new(inputs, params, outputs)
+}
+
+fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     where
-      T: From<ExpInner<I, P, O>> + ResourcePolicy,
-      I: ExpInputs,
-      P: ExpParameters,
-      O: ExpOutputs<Inputs=I, Params=P>,
+      T: ResourcePolicy,
 {
     let mut reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
     let writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
@@ -157,92 +358,55 @@ fn run_pipe_server<I, P, O, T>(read_fd: RawFd, write_fd: RawFd, app: clap::App) 
     let mut cl_args = String::new();
     reader.read_to_string(&mut cl_args)?;
 
-    let mut outputs = Vec::new();
+    let mut slurm_job_specs = Vec::new();
+    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters>::clap().setting(clap::AppSettings::NoBinaryName);
 
     for cmd in cl_args.lines() {
-        let q = "binary-name";
-        let args = app.clone().get_matches_from(
-            [q].iter().copied().chain(cmd.split_whitespace())
-        );
-        let exp = T::from(ExpInner::<I, P, O>::from_args(&args)?);
-        outputs.push(SlurmResources::get(&exp))
+        let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
+        let args = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters>::from_clap(&matches);
+        let exp: T = args.into_experiment();
+        slurm_job_specs.push(SlurmResources::get(&exp))
     }
 
-    serde_json::to_writer(writer, &outputs)?;
+    serde_json::to_writer(writer, &slurm_job_specs)?;
     Ok(())
 }
 
-pub fn handle_slurm_args<'de, I, P, O, T>() -> Result<T>
+pub fn handle_slurm_args<T>() -> Result<T>
     where
-        T: From<ExpInner<I, P, O>> + ResourcePolicy,
-        I: ExpInputs,
-        P: ExpParameters + Deserialize<'de>,
-        O: ExpOutputs<Inputs=I, Params=P>,
+        T: ResourcePolicy,
 {
-    let app = clap::App::new("")
-        .arg(clap::Arg::with_name("slurm-pipe")
-            .long("slurm-pipe")
-            .number_of_values(2)
-            .help("Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)")
-            .value_names(&["R", "W"])
-        )
-        .arg(clap::Arg::with_name("slurm-info")
-            .long("slurm-info")
-            .help("Print Slurm info as a JSON string and exit.")
-        )
-        .group(clap::ArgGroup::with_name("slurm-managed")
-            .args(&["slurm-pipe", "slurm-info"])
-        );
-    let app = I::add_args(app);
-    let app = P::add_args(app);
-    let args = app.clone().get_matches();
+    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters> = StructOpt::from_args();
+        // .arg(clap::Arg::with_name("slurm-pipe")
+        //     .long("slurm-pipe")
+        //     .number_of_values(2)
+        //     .help("")
+        //     .value_names(&["R", "W"])
+        // )
+        // .arg(clap::Arg::with_name("slurm-info")
+        //     .long("slurm-info")
+        //     .help("")
+        // )
+        // .group(clap::ArgGroup::with_name("slurm-managed")
+        //     .args(&["slurm-pipe", "slurm-info"])
+        // );
 
-    if let Some(mut rawfds) = args.values_of("slurm-pipe") {
-        let read_fd: RawFd = rawfds.next().unwrap().parse().context("parsing `R`")?;
-        let write_fd: RawFd = rawfds.next().unwrap().parse().context("parsing `W`")?;
-        debug_assert_eq!(rawfds.next(), None);
-        run_pipe_server::<I, P, O, T>(read_fd, write_fd, app)?;
+    if let Some(rawfds) = args.slurm.pipe.as_ref() {
+        let read_fd: RawFd = rawfds[0];
+        let write_fd: RawFd = rawfds[1];
+        debug_assert_eq!(rawfds.len(), 2);
+        run_pipe_server::<T>(read_fd, write_fd)?;
         exit(0)
     }
 
-    let exp = T::from(ExpInner::from_args(&args)?);
+    let slurm_info = args.slurm.info;
+    let exp: T = args.into_experiment();
 
-    if args.is_present("slurm-info") {
+    if slurm_info {
         println!("{}", serde_json::to_string_pretty(&SlurmResources::get(&exp))?);
         exit(0);
     }
-    Ok(exp.into())
+
+    Ok(exp)
 }
 
-pub trait ArgChoices: FromStr {
-  fn arg_choices() -> &'static [&'static str] {
-    &[]
-  }
-}
-
-#[macro_export]
-macro_rules! impl_arg_choices {
-    ($ty:path;
-      $($variant:ident = $string:literal),+ $(,)?
-    ) => {
-      impl ArgChoices for $ty {
-        fn arg_choices() -> &'static [&'static str] {
-          &[
-            $($string),*
-          ]
-        }
-      }
-
-      impl FromStr for $ty {
-        type Err = anyhow::Error;
-        fn from_str(s: &str) -> Result<Self> {
-          let v = match s {
-            $($string => <$ty>::$variant,)*
-            _ => anyhow::bail!("failed to parse {} to {}", s, stringify!($ty)),
-          };
-          Ok(v)
-        }
-      }
-
-    };
-}

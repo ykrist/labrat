@@ -5,18 +5,17 @@ use std::path::{PathBuf};
 use anyhow::{Result};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
-#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
-#[slurm(inputs)]
+#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 struct Inputs {
-    #[slurm(help="Dataset index")]
+    /// Dataset index
     index: u64,
-    #[slurm(default="1.0", help="Time window scale.", valname="S")]
+    /// Time window scale
+    #[structopt(default_value="1.0", value_name="S")]
     tw_scale: f64,
 }
 
-impl ExpInputs for Inputs {
+impl IdStr for Inputs {
     fn id_str(&self) -> String {
         format!("IDX{:03}_TW{:06}", self.index, (self.tw_scale*1000.0).round() as u64)
     }
@@ -28,52 +27,56 @@ enum Penum {
   Bar,
 }
 
-impl_arg_choices!{ Penum;
-  Foo = "foo",
-  Bar = "bar",
+impl_arg_enum!{
+    Penum;
+    Foo = "foo",
+    Bar = "bar"
 }
 
-#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
-#[slurm(parameters)]
+#[derive(StructOpt, Debug, Clone, Serialize, Deserialize)]
 struct Params {
-    #[slurm(argname="eps", default="0.0001")]
+    /// Parameter epsilon
+    #[structopt(long, default_value="0.0001")]
     epsilon: f64,
+    /// Number of threads to use
+    #[structopt(long)]
+    #[cfg_attr(debug_assertions, structopt(default_value="1"))]
+    #[cfg_attr(not(debug_assertions), structopt(default_value="4"))]
     cpus: u16,
-    #[slurm(default="true", help="disable frobbing")]
+    /// Parameter frob
+    #[structopt(long)]
     frob: bool,
-    #[slurm(help="turn on baz mode")]
+    /// Parameter baz
+    #[structopt(long)]
     baz: bool,
-    #[slurm(valname="name")]
-    param_name: String,
-    #[slurm(default="foo", choices)]
+    /// Give parameters a name (otherwise use a hash of the parameter values)
+    #[structopt(long)]
+    param_name: Option<String>,
+    /// Parameter cat
+    #[structopt(long, default_value="foo", possible_values=Penum::choices())]
     cat: Penum,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params{ epsilon: 0.0001, cpus: 1,  param_name: String::new(), frob: true, baz: false, cat: Penum::Bar }
+        Params{ epsilon: 0.0001, cpus: 1,  param_name: None, frob: true, baz: false, cat: Penum::Bar }
     }
 }
 
-impl ExpParameters for Params {
+impl IdStr for Params {
     fn id_str(&self) -> String {
-        if self.param_name.is_empty() {
-            id_from_serialised(self)
-        } else {
-            self.param_name.clone()
-        }
+        self.param_name.clone().unwrap_or_else(|| id_from_serialised(self))
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Outputs {
     log: PathBuf,
 }
 
-impl ExpOutputs for Outputs {
+impl NewOutput for Outputs {
     type Inputs = Inputs;
     type Params = Params;
-
     fn new(inputs: &Inputs, _params: &Params) -> Self {
         let filename = format!("{}-sollog.json", inputs.id_str());
         Outputs {
@@ -82,10 +85,18 @@ impl ExpOutputs for Outputs {
     }
 }
 
-define_experiment!{ struct MyExperiment, Inputs, Params, Outputs }
+struct MyExperiment {
+    inputs: Inputs,
+    params: Params,
+    outputs: Outputs
+}
 
-impl Experiment for MyExperiment {
-    fn log_root_dir() -> PathBuf {
+impl_experiment!{
+    MyExperiment;
+    inputs : Inputs;
+    params: Params;
+    outputs: Outputs;
+    {
         concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
     }
 }
@@ -103,6 +114,6 @@ fn main() -> Result<()> {
     exp.write_parameter_file()?;
 
     println!("Inputs:\n{}", serde_json::to_string_pretty(&exp.inputs).unwrap());
-    println!("Parameters:\n{}", serde_json::to_string_pretty(&exp.parameters).unwrap());
+    println!("Parameters:\n{}", serde_json::to_string_pretty(&exp.params).unwrap());
     Ok(())
 }
