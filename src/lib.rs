@@ -41,7 +41,7 @@ pub trait Experiment: Sized {
         log_dir
     }
 
-    fn get_output_path_prefix(&self, filename: &str) -> PathBuf {
+    fn get_output_path_prefixed(&self, filename: &str) -> PathBuf {
         let mut log_dir = Self::log_root_dir();
         log_dir.push(self.parameters().id_str());
         let mut log_dir = ensure_directory_exists(log_dir).unwrap();
