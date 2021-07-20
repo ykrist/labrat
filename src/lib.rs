@@ -1,10 +1,10 @@
 use std::time::Duration;
-use std::io::{Read};
+use std::io::{Read, BufReader};
 use std::fs::File;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process::exit;
 use structopt::*;
-use anyhow::{Result};
+use anyhow::{Result, Context};
 use sha2::Digest;
 use std::path::{PathBuf, Path};
 use serde::de::DeserializeOwned;
@@ -31,6 +31,7 @@ pub trait Experiment: Sized {
 
     fn new(inputs: Self::Inputs, parameters: Self::Parameters, outputs: Self::Outputs) -> Self;
 
+    fn post_parse(_inputs: &Self::Inputs, _parameters: &mut Self::Parameters) {}
 
     fn get_output_path(&self, filename: &str) -> PathBuf {
         let mut log_dir = Self::log_root_dir();
@@ -74,12 +75,18 @@ pub trait Experiment: Sized {
             output: O,
         }
 
-        let r = std::io::BufReader::new(std::fs::File::open(&path)?);
+        let r = BufReader::new(
+            File::open(&path).with_context(|| format!("failed to read {:?}", path.as_ref()))?
+        );
         let index:  Index<Self::Inputs, Self::Outputs> = serde_json::from_reader(r)?;
         let Index{ input, output } = index;
-        let r = std::io::BufReader::new(std::fs::File::open(
-            path.as_ref().with_file_name("parameters.json")
-        )?);
+
+        let param_file =path.as_ref().with_file_name("parameters.json");
+
+
+        let r = BufReader::new(
+            File::open(&param_file).with_context(|| format!("failed to read {:?}", param_file))?
+        );
         let params : Self::Parameters = serde_json::from_reader(r)?;
         Ok(Self::new(input, params, output))
     }
@@ -268,16 +275,15 @@ macro_rules! impl_arg_enum {
     };
 }
 
+
 #[macro_export]
-macro_rules! impl_experiment {
+macro_rules! impl_experiment_helper {
     (
         $target:path;
         $input:ident : $input_ty:path ;
         $param:ident : $param_ty:path;
         $output:ident : $output_ty:path;
-        $log_root:block
     ) => {
-        impl ::slurm_harray::Experiment for $target {
             type Inputs = $input_ty;
             type Parameters = $param_ty;
             type Outputs = $output_ty;
@@ -301,9 +307,6 @@ macro_rules! impl_experiment {
             fn parameters(&self) -> &Self::Parameters {
                 &self.$param
             }
-
-            fn log_root_dir() -> ::std::path::PathBuf $log_root
-        }
     };
 }
 
@@ -338,15 +341,13 @@ impl<S: StructOpt, I: StructOpt, P: StructOpt> ClArgs<S, I, P> {
     fn into_experiment<T>(self) -> T
         where T: Experiment<Inputs=I, Parameters=P>
     {
-        let ClArgs{ slurm: _, inputs, parameters } = self;
-        new_experiment(inputs, parameters)
+        let ClArgs{ slurm: _, inputs,mut parameters } = self;
+        T::post_parse(&inputs, &mut parameters);
+        let outputs = T::Outputs::new(&inputs, &parameters);
+        T::new(inputs, parameters, outputs)
     }
 }
 
-fn new_experiment<T: Experiment>(inputs: T::Inputs, params: T::Parameters) -> T {
-    let outputs = T::Outputs::new(&inputs, &params);
-    T::new(inputs, params, outputs)
-}
 
 fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     where
