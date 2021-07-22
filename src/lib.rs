@@ -13,23 +13,30 @@ pub use serde::{Serialize, Deserialize};
 pub use structopt::StructOpt;
 use structopt::StructOptInternal;
 
+#[derive(Debug, Copy, Clone, StructOpt, Default)]
+pub struct NoAuxParams {}
+
 pub trait NewOutput: Sized + Serialize + DeserializeOwned {
     type Inputs;
     type Params;
-    fn new(inputs: &Self::Inputs, params: &Self::Params) -> Self;
+    type AuxParams;
+
+    fn new(inputs: &Self::Inputs, params: &Self::Params, aux: &Self::AuxParams) -> Self;
 }
 
 pub trait Experiment: Sized {
     type Inputs: StructOptInternal + Serialize + DeserializeOwned + IdStr;
     type Parameters: StructOptInternal + Serialize + DeserializeOwned + IdStr;
-    type Outputs: NewOutput<Inputs=Self::Inputs, Params=Self::Parameters>;
+    type AuxParameters: StructOptInternal + Default;
+    type Outputs: NewOutput<Inputs=Self::Inputs, Params=Self::Parameters, AuxParams=Self::AuxParameters>;
 
     fn inputs(&self) -> &Self::Inputs;
     fn outputs(&self) -> &Self::Outputs;
     fn parameters(&self) -> &Self::Parameters;
+
     fn log_root_dir() -> PathBuf;
 
-    fn new(inputs: Self::Inputs, parameters: Self::Parameters, outputs: Self::Outputs) -> Self;
+    fn new(inputs: Self::Inputs, parameters: Self::Parameters, aux_parameters: Self::AuxParameters, outputs: Self::Outputs) -> Self;
 
     fn post_parse(_inputs: &Self::Inputs, _parameters: &mut Self::Parameters) {}
 
@@ -88,7 +95,7 @@ pub trait Experiment: Sized {
             File::open(&param_file).with_context(|| format!("failed to read {:?}", param_file))?
         );
         let params : Self::Parameters = serde_json::from_reader(r)?;
-        Ok(Self::new(input, params, output))
+        Ok(Self::new(input, params, Default::default(), output))
     }
 }
 
@@ -279,20 +286,22 @@ macro_rules! impl_arg_enum {
 #[macro_export]
 macro_rules! impl_experiment_helper {
     (
-        $target:path;
         $input:ident : $input_ty:path ;
         $param:ident : $param_ty:path;
         $output:ident : $output_ty:path;
+        $($aux_param:ident : $aux_param_ty:path;)?
     ) => {
             type Inputs = $input_ty;
             type Parameters = $param_ty;
+            impl_experiment_helper!{ @AUX_PARAM_ATYPE $($aux_param_ty)* }
             type Outputs = $output_ty;
 
-            fn new(inputs: Self::Inputs, params: Self::Parameters, outputs: Self::Outputs) -> Self {
-               $target {
+            fn new(inputs: Self::Inputs, params: Self::Parameters, aux_params: Self::AuxParameters, outputs: Self::Outputs) -> Self {
+               Self {
                    $input: inputs,
                    $param: params,
-                   $output: outputs
+                   $($aux_param: aux_params,)*
+                   $output: outputs,
                }
             }
 
@@ -307,6 +316,14 @@ macro_rules! impl_experiment_helper {
             fn parameters(&self) -> &Self::Parameters {
                 &self.$param
             }
+    };
+
+    (@AUX_PARAM_ATYPE ) => {
+        type AuxParameters = $crate::NoAuxParams;
+    };
+
+    (@AUX_PARAM_ATYPE $aux_param_ty:path) => {
+        type AuxParameters = $aux_param_ty;
     };
 }
 
@@ -328,23 +345,25 @@ struct SlurmArgs {
 struct NoSlurmArgs {}
 
 #[derive(StructOpt, Debug, Clone)]
-struct ClArgs<S: StructOpt, I: StructOpt, P: StructOpt> {
+struct ClArgs<S: StructOpt, I: StructOpt, P: StructOpt, A: StructOpt> {
     #[structopt(flatten)]
     slurm: S,
     #[structopt(flatten)]
     inputs: I,
     #[structopt(flatten)]
     parameters: P,
+    #[structopt(flatten)]
+    aux_parameters: A,
 }
 
-impl<S: StructOpt, I: StructOpt, P: StructOpt> ClArgs<S, I, P> {
+impl<S: StructOpt, I: StructOpt, P: StructOpt, A: StructOpt> ClArgs<S, I, P, A> {
     fn into_experiment<T>(self) -> T
-        where T: Experiment<Inputs=I, Parameters=P>
+        where T: Experiment<Inputs=I, Parameters=P, AuxParameters=A>
     {
-        let ClArgs{ slurm: _, inputs,mut parameters } = self;
+        let ClArgs{ slurm: _, inputs,mut parameters, aux_parameters } = self;
         T::post_parse(&inputs, &mut parameters);
-        let outputs = T::Outputs::new(&inputs, &parameters);
-        T::new(inputs, parameters, outputs)
+        let outputs = T::Outputs::new(&inputs, &parameters, &aux_parameters);
+        T::new(inputs, parameters, aux_parameters, outputs)
     }
 }
 
@@ -360,11 +379,11 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     reader.read_to_string(&mut cl_args)?;
 
     let mut slurm_job_specs = Vec::new();
-    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters>::clap().setting(clap::AppSettings::NoBinaryName);
+    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::clap().setting(clap::AppSettings::NoBinaryName);
 
     for cmd in cl_args.lines() {
         let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
-        let args = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters>::from_clap(&matches);
+        let args = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::from_clap(&matches);
         let exp: T = args.into_experiment();
         slurm_job_specs.push(SlurmResources::get(&exp))
     }
@@ -377,7 +396,7 @@ pub fn handle_slurm_args<T>() -> Result<T>
     where
         T: ResourcePolicy,
 {
-    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters> = StructOpt::from_args();
+    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters, T::AuxParameters> = StructOpt::from_args();
         // .arg(clap::Arg::with_name("slurm-pipe")
         //     .long("slurm-pipe")
         //     .number_of_values(2)

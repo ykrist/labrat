@@ -77,7 +77,9 @@ struct Outputs {
 impl NewOutput for Outputs {
     type Inputs = Inputs;
     type Params = Params;
-    fn new(inputs: &Inputs, _params: &Params) -> Self {
+    type AuxParams = NoAuxParams;
+
+    fn new(inputs: &Inputs, _params: &Params, _aux: &Self::AuxParams) -> Self {
         let filename = format!("{}-sollog.json", inputs.id_str());
         Outputs {
             log: filename.into()
@@ -91,12 +93,14 @@ struct MyExperiment {
     outputs: Outputs
 }
 
-impl_experiment!{
-    MyExperiment;
-    inputs : Inputs;
-    params: Params;
-    outputs: Outputs;
-    {
+impl Experiment for MyExperiment {
+    impl_experiment_helper!{
+        inputs : Inputs;
+        params: Params;
+        outputs: Outputs;
+    }
+
+    fn log_root_dir() -> PathBuf {
         concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
     }
 }
