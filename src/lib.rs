@@ -379,7 +379,8 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     reader.read_to_string(&mut cl_args)?;
 
     let mut slurm_job_specs = Vec::new();
-    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::clap().setting(clap::AppSettings::NoBinaryName);
+    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::clap()
+      .setting(clap::AppSettings::NoBinaryName);
 
     for cmd in cl_args.lines() {
         let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
@@ -392,11 +393,21 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     Ok(())
 }
 
+fn apply_clap_settings<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
+    app
+      .group(clap::ArgGroup::with_name("slurm-managed")
+          .args(&["pipe", "info"])
+      )
+      .setting(clap::AppSettings::NextLineHelp)
+}
+
 pub fn handle_slurm_args<T>() -> Result<T>
     where
         T: ResourcePolicy,
 {
-    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters, T::AuxParameters> = StructOpt::from_args();
+
+    let app = apply_clap_settings(ClArgsWithSlurm::<T>::clap());
+    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters, T::AuxParameters> = StructOpt::from_clap(&app.get_matches());
         // .arg(clap::Arg::with_name("slurm-pipe")
         //     .long("slurm-pipe")
         //     .number_of_values(2)
@@ -407,9 +418,7 @@ pub fn handle_slurm_args<T>() -> Result<T>
         //     .long("slurm-info")
         //     .help("")
         // )
-        // .group(clap::ArgGroup::with_name("slurm-managed")
-        //     .args(&["slurm-pipe", "slurm-info"])
-        // );
+
 
     if let Some(rawfds) = args.slurm.pipe.as_ref() {
         let read_fd: RawFd = rawfds[0];
