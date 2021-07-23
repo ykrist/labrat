@@ -345,20 +345,20 @@ struct SlurmArgs {
 struct NoSlurmArgs {}
 
 #[derive(StructOpt, Debug, Clone)]
-struct ClArgs<S: StructOpt, I: StructOpt, P: StructOpt, A: StructOpt> {
+struct ClArgs<S: StructOpt, T: Experiment> {
     #[structopt(flatten)]
     slurm: S,
     #[structopt(flatten)]
-    inputs: I,
+    inputs: T::Inputs,
     #[structopt(flatten)]
-    parameters: P,
+    parameters: T::Parameters,
     #[structopt(flatten)]
-    aux_parameters: A,
+    aux_parameters: T::AuxParameters,
 }
 
-impl<S: StructOpt, I: StructOpt, P: StructOpt, A: StructOpt> ClArgs<S, I, P, A> {
-    fn into_experiment<T>(self) -> T
-        where T: Experiment<Inputs=I, Parameters=P, AuxParameters=A>
+
+impl<S: StructOpt, T: Experiment> ClArgs<S, T> {
+    fn into_experiment(self) -> T
     {
         let ClArgs{ slurm: _, inputs,mut parameters, aux_parameters } = self;
         T::post_parse(&inputs, &mut parameters);
@@ -379,12 +379,12 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     reader.read_to_string(&mut cl_args)?;
 
     let mut slurm_job_specs = Vec::new();
-    let mut app = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::clap()
+    let mut app = ClArgs::<NoSlurmArgs, T>::clap()
       .setting(clap::AppSettings::NoBinaryName);
 
     for cmd in cl_args.lines() {
         let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
-        let args = ClArgs::<NoSlurmArgs, T::Inputs, T::Parameters, T::AuxParameters>::from_clap(&matches);
+        let args = ClArgs::<NoSlurmArgs, T>::from_clap(&matches);
         let exp: T = args.into_experiment();
         slurm_job_specs.push(SlurmResources::get(&exp))
     }
@@ -399,6 +399,8 @@ fn apply_clap_settings<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
           .args(&["pipe", "info"])
       )
       .setting(clap::AppSettings::NextLineHelp)
+      .setting(clap::AppSettings::ColoredHelp)
+      .name("")
 }
 
 pub fn handle_slurm_args<T>() -> Result<T>
@@ -406,19 +408,8 @@ pub fn handle_slurm_args<T>() -> Result<T>
         T: ResourcePolicy,
 {
 
-    let app = apply_clap_settings(ClArgsWithSlurm::<T>::clap());
-    let args : ClArgs<SlurmArgs, T::Inputs, T::Parameters, T::AuxParameters> = StructOpt::from_clap(&app.get_matches());
-        // .arg(clap::Arg::with_name("slurm-pipe")
-        //     .long("slurm-pipe")
-        //     .number_of_values(2)
-        //     .help("")
-        //     .value_names(&["R", "W"])
-        // )
-        // .arg(clap::Arg::with_name("slurm-info")
-        //     .long("slurm-info")
-        //     .help("")
-        // )
-
+    let app = apply_clap_settings(ClArgs::<SlurmArgs, T>::clap());
+    let args = ClArgs::<SlurmArgs, T>::from_clap(&app.get_matches());
 
     if let Some(rawfds) = args.slurm.pipe.as_ref() {
         let read_fd: RawFd = rawfds[0];
