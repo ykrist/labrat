@@ -354,16 +354,23 @@ struct ClArgs<S: StructOpt, T: Experiment> {
     parameters: T::Parameters,
     #[structopt(flatten)]
     aux_parameters: T::AuxParameters,
+    #[structopt(long, short="l", value_name="json file")]
+    /// Load parameters from file.  All other parameter arguments will be ignored.
+    load_params: Option<PathBuf>
 }
 
 
 impl<S: StructOpt, T: Experiment> ClArgs<S, T> {
-    fn into_experiment(self) -> T
+    fn into_experiment(self) -> Result<T>
     {
-        let ClArgs{ slurm: _, inputs,mut parameters, aux_parameters } = self;
+        let ClArgs{ slurm: _, inputs,mut parameters, aux_parameters, load_params } = self;
+        if let Some(p) = load_params {
+            let s = std::fs::read_to_string(p).context("failed to read parameters from file")?;
+            parameters = serde_json::from_str(&s).context("failed to deserialise parameters")?;
+        }
         T::post_parse(&inputs, &mut parameters);
         let outputs = T::Outputs::new(&inputs, &parameters, &aux_parameters);
-        T::new(inputs, parameters, aux_parameters, outputs)
+        Ok(T::new(inputs, parameters, aux_parameters, outputs))
     }
 }
 
@@ -385,7 +392,7 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     for cmd in cl_args.lines() {
         let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
         let args = ClArgs::<NoSlurmArgs, T>::from_clap(&matches);
-        let exp: T = args.into_experiment();
+        let exp: T = args.into_experiment()?;
         slurm_job_specs.push(SlurmResources::get(&exp))
     }
 
@@ -420,7 +427,7 @@ pub fn handle_slurm_args<T>() -> Result<T>
     }
 
     let slurm_info = args.slurm.info;
-    let exp: T = args.into_experiment();
+    let exp: T = args.into_experiment()?;
 
     if slurm_info {
         println!("{}", serde_json::to_string_pretty(&SlurmResources::get(&exp))?);
