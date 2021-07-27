@@ -1,5 +1,5 @@
 use std::time::Duration;
-use std::io::{Read, BufReader};
+use std::io::{BufReader};
 use std::fs::File;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process::exit;
@@ -180,7 +180,9 @@ impl ToString for MailType {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct SlurmResources {
     script: String,
+    #[serde(rename="err")]
     log_err: PathBuf,
+    #[serde(rename="out")]
     log_out: PathBuf,
     #[serde(skip_serializing_if="Option::is_none")]
     job_name: Option<String>,
@@ -331,13 +333,13 @@ macro_rules! impl_experiment_helper {
 struct SlurmArgs {
     /// Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)
     #[structopt(
-        long="slurm-pipe",
+        long="p-slurminfo",
         number_of_values=2,
         value_names=&["R", "W"],
     )]
     pipe: Option<Vec<RawFd>>,
     /// Print Slurm info as a JSON string and exit.
-    #[structopt(long="slurm-info")]
+    #[structopt(long="slurminfo")]
     info: bool,
 }
 
@@ -379,18 +381,15 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     where
       T: ResourcePolicy,
 {
-    let mut reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
+    let reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
     let writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
 
-    let mut cl_args = String::new();
-    reader.read_to_string(&mut cl_args)?;
-
+    let commands : Vec<Vec<String>> = serde_json::from_reader(reader)?;
     let mut slurm_job_specs = Vec::new();
-    let mut app = ClArgs::<NoSlurmArgs, T>::clap()
-      .setting(clap::AppSettings::NoBinaryName);
+    let mut app = ClArgs::<NoSlurmArgs, T>::clap();
 
-    for cmd in cl_args.lines() {
-        let matches= app.get_matches_from_safe_borrow(cmd.split_whitespace().map(String::from))?;
+    for cmd in commands {
+        let matches= app.get_matches_from_safe_borrow(&cmd)?;
         let args = ClArgs::<NoSlurmArgs, T>::from_clap(&matches);
         let exp: T = args.into_experiment()?;
         slurm_job_specs.push(SlurmResources::get(&exp))
@@ -410,21 +409,47 @@ fn apply_clap_settings<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
       .name("")
 }
 
+fn check_args_for_slurm_pipe() -> Result<Option<(RawFd, RawFd)>> {
+    fn parse_fd(arg: &Option<String>) -> Result<RawFd> {
+        let fd = arg.as_ref().ok_or_else(|| anyhow::anyhow!("--p-slurminfo takes two integer arguments."))?;
+        fd.parse().with_context(|| format!("Failed to parse file descriptor `{}`", &fd))
+    }
+
+    let mut args = std::env::args();
+
+    let mut pipe_slurminfo_found = false;
+    let mut rd = None;
+    let mut wd = None;
+
+    while let Some(s) = args.next() {
+        if s == "--p-slurminfo" {
+            pipe_slurminfo_found = true;
+            rd = args.next();
+            wd = args.next();
+        } else if s == "--help" || s == "-h" {
+            return Ok(None)
+        }
+    }
+
+    if pipe_slurminfo_found {
+        let rd = parse_fd(&rd)?;
+        let wr = parse_fd(&wd)?;
+        return Ok(Some((rd, wr)))
+    }
+    Ok(None)
+}
+
 pub fn handle_slurm_args<T>() -> Result<T>
     where
         T: ResourcePolicy,
 {
-
-    let app = apply_clap_settings(ClArgs::<SlurmArgs, T>::clap());
-    let args = ClArgs::<SlurmArgs, T>::from_clap(&app.get_matches());
-
-    if let Some(rawfds) = args.slurm.pipe.as_ref() {
-        let read_fd: RawFd = rawfds[0];
-        let write_fd: RawFd = rawfds[1];
-        debug_assert_eq!(rawfds.len(), 2);
+    if let Some((read_fd, write_fd)) = check_args_for_slurm_pipe()? {
         run_pipe_server::<T>(read_fd, write_fd)?;
         exit(0)
     }
+
+    let app = apply_clap_settings(ClArgs::<SlurmArgs, T>::clap());
+    let args = ClArgs::<SlurmArgs, T>::from_clap(&app.get_matches());
 
     let slurm_info = args.slurm.info;
     let exp: T = args.into_experiment()?;
