@@ -179,20 +179,25 @@ impl ToString for MailType {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct SlurmResources {
+    #[serde(rename="script")]
     script: String,
     #[serde(rename="err")]
     log_err: PathBuf,
     #[serde(rename="out")]
     log_out: PathBuf,
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(rename="job-name", skip_serializing_if="Option::is_none")]
     job_name: Option<String>,
+    #[serde(rename="cpus-per-task")]
     cpus: usize,
+    #[serde(rename="nodes")]
     nodes: usize,
+    #[serde(rename="times")]
     time: String,
+    #[serde(rename="mem")]
     memory: String,
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(rename="mail-user", skip_serializing_if="Option::is_none")]
     mail_user: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(rename="mail-type", skip_serializing_if="Option::is_none")]
     mail_type: Option<String>,
 }
 
