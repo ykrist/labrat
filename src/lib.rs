@@ -191,7 +191,7 @@ struct SlurmResources {
     cpus: usize,
     #[serde(rename="nodes")]
     nodes: usize,
-    #[serde(rename="times")]
+    #[serde(rename="time")]
     time: String,
     #[serde(rename="mem")]
     memory: String,
