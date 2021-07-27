@@ -406,6 +406,7 @@ fn apply_clap_settings<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
       )
       .setting(clap::AppSettings::NextLineHelp)
       .setting(clap::AppSettings::ColoredHelp)
+      .setting(clap::AppSettings::DeriveDisplayOrder)
       .name("")
 }
 
