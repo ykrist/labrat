@@ -341,6 +341,7 @@ macro_rules! impl_experiment_helper {
 #[derive(StructOpt, Debug, Clone)]
 struct SlurmArgs {
     /// Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)
+    #[allow(dead_code)]
     #[structopt(
         long="p-slurminfo",
         number_of_values=2,
