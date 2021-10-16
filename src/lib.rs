@@ -12,6 +12,7 @@ use serde::de::DeserializeOwned;
 pub use serde::{Serialize, Deserialize};
 pub use structopt::StructOpt;
 use structopt::StructOptInternal;
+use std::str::FromStr;
 
 #[derive(Debug, Copy, Clone, StructOpt, Default)]
 pub struct NoAuxParams {}
@@ -36,9 +37,9 @@ pub trait Experiment: Sized {
 
     fn log_root_dir() -> PathBuf;
 
-    fn new(inputs: Self::Inputs, parameters: Self::Parameters, aux_parameters: Self::AuxParameters, outputs: Self::Outputs) -> Self;
+    fn new(prof: SlurmProfile, inputs: Self::Inputs, parameters: Self::Parameters, aux_parameters: Self::AuxParameters, outputs: Self::Outputs) -> Self;
 
-    fn post_parse(_inputs: &Self::Inputs, _parameters: &mut Self::Parameters) {}
+    fn post_parse(_prof: SlurmProfile, _inputs: &Self::Inputs, _parameters: &mut Self::Parameters, _aux_params: &mut Self::AuxParameters) {}
 
     fn get_output_path(&self, filename: &str) -> PathBuf {
         let mut log_dir = Self::log_root_dir();
@@ -95,7 +96,7 @@ pub trait Experiment: Sized {
             File::open(&param_file).with_context(|| format!("failed to read {:?}", param_file))?
         );
         let params : Self::Parameters = serde_json::from_reader(r)?;
-        Ok(Self::new(input, params, Default::default(), output))
+        Ok(Self::new(SlurmProfile::Default, input, params, Default::default(), output))
     }
 }
 
@@ -297,6 +298,7 @@ macro_rules! impl_arg_enum {
 #[macro_export]
 macro_rules! impl_experiment_helper {
     (
+        $profile:ident;
         $input:ident : $input_ty:path ;
         $param:ident : $param_ty:path;
         $output:ident : $output_ty:path;
@@ -307,8 +309,9 @@ macro_rules! impl_experiment_helper {
             impl_experiment_helper!{ @AUX_PARAM_ATYPE $($aux_param_ty)* }
             type Outputs = $output_ty;
 
-            fn new(inputs: Self::Inputs, params: Self::Parameters, aux_params: Self::AuxParameters, outputs: Self::Outputs) -> Self {
+            fn new(prof: slurm_harray::SlurmProfile, inputs: Self::Inputs, params: Self::Parameters, aux_params: Self::AuxParameters, outputs: Self::Outputs) -> Self {
                Self {
+                   $profile: prof,
                    $input: inputs,
                    $param: params,
                    $($aux_param: aux_params,)*
@@ -353,11 +356,15 @@ struct SlurmArgs {
     info: bool,
 }
 
+
 #[derive(StructOpt, Debug, Clone)]
 struct NoSlurmArgs {}
 
+
 #[derive(StructOpt, Debug, Clone)]
 struct ClArgs<S: StructOpt, T: Experiment> {
+    #[structopt(long="slurmprofile", parse(try_from_str), default_value="default")]
+    profile: SlurmProfile,
     #[structopt(flatten)]
     slurm: S,
     #[structopt(flatten)]
@@ -372,17 +379,48 @@ struct ClArgs<S: StructOpt, T: Experiment> {
 }
 
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum SlurmProfile {
+    Default,
+    Test,
+    Trace,
+}
+
+impl Default for SlurmProfile {
+    fn default() -> Self { SlurmProfile::Default }
+}
+
+impl FromStr for SlurmProfile {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        use SlurmProfile::*;
+        match s {
+            "default" => Ok(Default),
+            "test" => Ok(Test),
+            "trace" => Ok(Trace),
+            _ => Err(format!("Invalid string for SlurmProfile: `{}`", s))
+        }
+    }
+}
+
 impl<S: StructOpt, T: Experiment> ClArgs<S, T> {
     fn into_experiment(self) -> Result<T>
     {
-        let ClArgs{ slurm: _, inputs,mut parameters, aux_parameters, load_params } = self;
+        let ClArgs{
+            slurm: _,
+            profile,
+            inputs,
+            mut parameters,
+            mut aux_parameters,
+            load_params
+        } = self;
         if let Some(p) = load_params {
             let s = std::fs::read_to_string(p).context("failed to read parameters from file")?;
             parameters = serde_json::from_str(&s).context("failed to deserialise parameters")?;
         }
-        T::post_parse(&inputs, &mut parameters);
+        T::post_parse(profile, &inputs, &mut parameters, &mut aux_parameters);
         let outputs = T::Outputs::new(&inputs, &parameters, &aux_parameters);
-        Ok(T::new(inputs, parameters, aux_parameters, outputs))
+        Ok(T::new(profile, inputs, parameters, aux_parameters, outputs))
     }
 }
 
@@ -393,6 +431,7 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
 {
     let reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
     let writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
+
 
     let commands : Vec<Vec<String>> = serde_json::from_reader(reader)?;
     let mut slurm_job_specs = Vec::new();
