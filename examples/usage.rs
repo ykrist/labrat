@@ -88,16 +88,18 @@ impl NewOutput for Outputs {
 }
 
 struct MyExperiment {
+    profile: SlurmProfile,
     inputs: Inputs,
     params: Params,
     outputs: Outputs
 }
 
 impl Experiment for MyExperiment {
-    impl_experiment_helper!{
-        inputs : Inputs;
-        params: Params;
-        outputs: Outputs;
+    impl_experiment_helper! {
+      profile;
+      inputs: Inputs;
+      params: Params;
+      outputs: Outputs;
     }
 
     fn log_root_dir() -> PathBuf {
@@ -110,6 +112,10 @@ impl ResourcePolicy for MyExperiment {
     fn memory(&self) -> MemoryAmount { MemoryAmount::from_gb(4) }
     fn script(&self) -> String { String::from("#!/bin/bash\n") }
     fn job_name(&self) -> Option<String> { Some(String::from("hello world"))}
+
+    fn exclude(&self) -> Option<String> {
+        Some("shitty-node-that-fails".into())
+    }
 }
 
 fn main() -> Result<()> {

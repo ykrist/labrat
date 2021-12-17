@@ -202,6 +202,10 @@ struct SlurmResources {
     mail_type: Option<String>,
     #[serde(rename="constraint", skip_serializing_if="Option::is_none")]
     constraint: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    exclude: Option<String>,
+    #[serde(rename="constraint", skip_serializing_if="Option::is_none")]
+    nodelist: Option<String>,
 }
 
 fn fmt_as_slurm_time(mut secs: u64) -> String {
@@ -238,6 +242,8 @@ impl SlurmResources {
             mail_type,
             cpus: exp.cpus(),
             nodes: exp.nodes(),
+            nodelist: exp.nodelist(),
+            exclude: exp.exclude(),
         }
     }
 }
@@ -255,6 +261,9 @@ pub trait ResourcePolicy: Experiment {
     fn mail_user(&self) -> Option<String> { None }
     fn mail_type(&self) -> Vec<MailType> { Vec::new() }
     fn constraint(&self) -> Option<String> { None }
+    fn exclude(&self) -> Option<String> { None }
+    fn nodelist(&self) -> Option<String> { None }
+
     fn log_err(&self) -> PathBuf {
         self.get_output_path(&format!("{}.err", self.inputs().id_str()))
     }
