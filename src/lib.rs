@@ -3,18 +3,16 @@ use std::io::{BufReader};
 use std::fs::File;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::process::exit;
-use structopt::*;
 use anyhow::{Result, Context};
 use sha2::Digest;
 use std::path::{PathBuf, Path};
 use serde::de::DeserializeOwned;
+use clap::Parser;
 
 pub use serde::{Serialize, Deserialize};
-pub use structopt::StructOpt;
-use structopt::StructOptInternal;
-use std::str::FromStr;
+pub use clap::{Args, ArgEnum};
 
-#[derive(Debug, Copy, Clone, StructOpt, Default)]
+#[derive(Debug, Copy, Clone, clap::Args, Default)]
 pub struct NoAuxParams {}
 
 pub trait NewOutput: Sized + Serialize + DeserializeOwned {
@@ -26,9 +24,9 @@ pub trait NewOutput: Sized + Serialize + DeserializeOwned {
 }
 
 pub trait Experiment: Sized {
-    type Inputs: StructOptInternal + Serialize + DeserializeOwned + IdStr;
-    type Parameters: StructOptInternal + Serialize + DeserializeOwned + IdStr;
-    type AuxParameters: StructOptInternal + Default;
+    type Inputs: Args + Serialize + DeserializeOwned + IdStr;
+    type Parameters: Args + Serialize + DeserializeOwned + IdStr;
+    type AuxParameters: Args + Default;
     type Outputs: NewOutput<Inputs=Self::Inputs, Params=Self::Parameters, AuxParams=Self::AuxParameters>;
 
     fn inputs(&self) -> &Self::Inputs;
@@ -272,38 +270,6 @@ pub trait ResourcePolicy: Experiment {
     }
 }
 
-
-pub trait ArgEnum: std::str::FromStr {
-    fn choices() -> &'static [&'static str];
-}
-
-#[macro_export]
-macro_rules! impl_arg_enum {
-    ($ty:path;
-      $($variant:ident = $string:literal),+ $(,)?
-    ) => {
-      impl ::slurm_harray::ArgEnum for $ty {
-        fn choices() -> &'static [&'static str] {
-          &[
-            $($string),*
-          ]
-        }
-      }
-
-      impl ::std::str::FromStr for $ty {
-        type Err = String;
-        fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
-          let v = match s {
-            $($string => <$ty>::$variant,)*
-            _ => return Err(format!("failed to parse {} to {}", s, stringify!($ty))),
-          };
-          Ok(v)
-        }
-      }
-    };
-}
-
-
 #[macro_export]
 macro_rules! impl_experiment_helper {
     (
@@ -350,45 +316,51 @@ macro_rules! impl_experiment_helper {
     };
 }
 
-#[derive(StructOpt, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone)]
 struct SlurmArgs {
     /// Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)
+    /// All other arguments are ignored.
     #[allow(dead_code)]
-    #[structopt(
+    #[clap(
         long="p-slurminfo",
         number_of_values=2,
         value_names=&["R", "W"],
+        group("slurm-managed"),
     )]
     pipe: Option<Vec<RawFd>>,
     /// Print Slurm info as a JSON string and exit.
-    #[structopt(long="slurminfo")]
+    #[clap(long="slurminfo", group("slurm-managed"))]
     info: bool,
 }
 
 
-#[derive(StructOpt, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone)]
 struct NoSlurmArgs {}
 
 
-#[derive(StructOpt, Debug, Clone)]
-struct ClArgs<S: StructOpt, T: Experiment> {
-    #[structopt(long="slurmprofile", parse(try_from_str), default_value="default")]
+#[derive(clap::Parser, Debug, Clone)]
+#[clap(setting(clap::AppSettings::DeriveDisplayOrder))]
+#[clap(next_line_help(true))]
+struct ClArgs<S: clap::Args, T: Experiment> {
+    /// Which Slurm profile to use.  Different profiles allow you to request 
+    /// more resources for debugging runs, for example.
+    #[clap(arg_enum, long="slurmprofile", default_value_t)]
     profile: SlurmProfile,
-    #[structopt(flatten)]
+    #[clap(flatten)]
     slurm: S,
-    #[structopt(flatten)]
+    #[clap(flatten, next_help_heading="Inputs")]
     inputs: T::Inputs,
-    #[structopt(flatten)]
+    #[clap(flatten, next_help_heading="Parameters")]
     parameters: T::Parameters,
-    #[structopt(flatten)]
+    #[clap(flatten, next_help_heading="Output Parameters")]
     aux_parameters: T::AuxParameters,
-    #[structopt(long, short="l", value_name="json file")]
+    #[clap(long, short='l', value_name="json file")]
     /// Load parameters from file.  All other parameter arguments will be ignored.
     load_params: Option<PathBuf>
 }
 
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, ArgEnum)]
 pub enum SlurmProfile {
     Default,
     Test,
@@ -399,20 +371,7 @@ impl Default for SlurmProfile {
     fn default() -> Self { SlurmProfile::Default }
 }
 
-impl FromStr for SlurmProfile {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        use SlurmProfile::*;
-        match s {
-            "default" => Ok(Default),
-            "test" => Ok(Test),
-            "trace" => Ok(Trace),
-            _ => Err(format!("Invalid string for SlurmProfile: `{}`", s))
-        }
-    }
-}
-
-impl<S: StructOpt, T: Experiment> ClArgs<S, T> {
+impl<S: clap::Args, T: Experiment> ClArgs<S, T> {
     fn into_experiment(self) -> Result<T>
     {
         let ClArgs{
@@ -444,11 +403,11 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
 
     let commands : Vec<Vec<String>> = serde_json::from_reader(reader)?;
     let mut slurm_job_specs = Vec::new();
-    let mut app = ClArgs::<NoSlurmArgs, T>::clap();
 
     for cmd in commands {
-        let matches= app.get_matches_from_safe_borrow(&cmd)?;
-        let args = ClArgs::<NoSlurmArgs, T>::from_clap(&matches);
+        // Add a dummy argv[0]
+        // let cmd = std::iter::once(String::new()).chain(cmd);
+        let args = ClArgs::<NoSlurmArgs, T>::try_parse_from(cmd)?;
         let exp: T = args.into_experiment()?;
         slurm_job_specs.push(SlurmResources::get(&exp))
     }
@@ -457,16 +416,6 @@ fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
     Ok(())
 }
 
-fn apply_clap_settings<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
-    app
-      .group(clap::ArgGroup::with_name("slurm-managed")
-          .args(&["pipe", "info"])
-      )
-      .setting(clap::AppSettings::NextLineHelp)
-      .setting(clap::AppSettings::ColoredHelp)
-      .setting(clap::AppSettings::DeriveDisplayOrder)
-      .name("")
-}
 
 fn check_args_for_slurm_pipe() -> Result<Option<(RawFd, RawFd)>> {
     fn parse_fd(arg: &Option<String>) -> Result<RawFd> {
@@ -498,6 +447,7 @@ fn check_args_for_slurm_pipe() -> Result<Option<(RawFd, RawFd)>> {
     Ok(None)
 }
 
+
 pub fn handle_slurm_args<T>() -> Result<T>
     where
         T: ResourcePolicy,
@@ -507,9 +457,7 @@ pub fn handle_slurm_args<T>() -> Result<T>
         exit(0)
     }
 
-    let app = apply_clap_settings(ClArgs::<SlurmArgs, T>::clap());
-    let args = ClArgs::<SlurmArgs, T>::from_clap(&app.get_matches());
-
+    let args = ClArgs::<SlurmArgs, T>::parse();
     let slurm_info = args.slurm.info;
     let exp: T = args.into_experiment()?;
 

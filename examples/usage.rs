@@ -1,17 +1,17 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 use slurm_harray::*;
-use std::path::{PathBuf};
+use std::path::{PathBuf, Path};
 use anyhow::{Result};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 struct Inputs {
     /// Dataset index
     index: u64,
     /// Time window scale
-    #[structopt(default_value="1.0", value_name="S")]
+    #[clap(default_value_t=1.0, value_name="S")]
     tw_scale: f64,
 }
 
@@ -21,40 +21,39 @@ impl IdStr for Inputs {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(clap::ArgEnum, Clone, Serialize, Deserialize, Debug)]
 enum Penum {
   Foo,
   Bar,
 }
 
-impl_arg_enum!{
-    Penum;
-    Foo = "foo",
-    Bar = "bar"
-}
-
-#[derive(StructOpt, Debug, Clone, Serialize, Deserialize)]
+#[derive(Args, Debug, Clone, Serialize, Deserialize)]
 struct Params {
     /// Parameter epsilon
-    #[structopt(long, default_value="0.0001")]
+    #[clap(long, default_value_t=0.0001)]
     epsilon: f64,
     /// Number of threads to use
-    #[structopt(long)]
-    #[cfg_attr(debug_assertions, structopt(default_value="1"))]
-    #[cfg_attr(not(debug_assertions), structopt(default_value="4"))]
+    #[clap(long, default_value_t=1)]
     cpus: u16,
-    /// Parameter frob
-    #[structopt(long)]
+    /// Switch frob
+    #[clap(long)]
     frob: bool,
     /// Parameter baz
-    #[structopt(long)]
+    #[clap(long)]
     baz: bool,
     /// Give parameters a name (otherwise use a hash of the parameter values)
-    #[structopt(long)]
+    #[clap(long)]
     param_name: Option<String>,
     /// Parameter cat
-    #[structopt(long, default_value="foo", possible_values=Penum::choices())]
+    #[clap(arg_enum, long, default_value_t=Penum::Foo)]
     cat: Penum,
+}
+
+#[derive(Args, Default, Debug, Clone, Serialize, Deserialize)]
+struct AuxParams {
+    /// Output directory. Files will be placed in DIR/PARAM_NAME/filename
+    #[clap(short='o', value_name="DIR")]
+    output_dir: Option<PathBuf>,
 }
 
 impl Default for Params {
@@ -77,7 +76,7 @@ struct Outputs {
 impl NewOutput for Outputs {
     type Inputs = Inputs;
     type Params = Params;
-    type AuxParams = NoAuxParams;
+    type AuxParams = AuxParams;
 
     fn new(inputs: &Inputs, _params: &Params, _aux: &Self::AuxParams) -> Self {
         let filename = format!("{}-sollog.json", inputs.id_str());
@@ -91,7 +90,8 @@ struct MyExperiment {
     profile: SlurmProfile,
     inputs: Inputs,
     params: Params,
-    outputs: Outputs
+    auxparams: AuxParams,
+    outputs: Outputs,
 }
 
 impl Experiment for MyExperiment {
@@ -100,6 +100,7 @@ impl Experiment for MyExperiment {
       inputs: Inputs;
       params: Params;
       outputs: Outputs;
+      auxparams: AuxParams;
     }
 
     fn log_root_dir() -> PathBuf {
