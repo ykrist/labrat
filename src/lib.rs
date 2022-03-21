@@ -419,14 +419,24 @@ struct SlurmArgs {
 #[derive(clap::Args, Debug, Clone)]
 struct NoSlurmArgs {}
 
+// Default clap help template is:
+// {before-help}{bin} {version}
+// {author-with-newline}{about-with-newline}
+// {usage-heading}
+//    {usage}
+//
+// {all-args}{after-help}
+
 #[derive(clap::Parser, Debug, Clone)]
-#[clap(setting(clap::AppSettings::DeriveDisplayOrder))]
-#[clap(next_line_help(true))]
-#[clap(bin_name="")]
+#[clap(
+    setting(clap::AppSettings::DeriveDisplayOrder),
+    next_line_help(true),
+    help_template="{usage-heading}\n    {usage}\n\n{all-args}{after-help}"
+)]
 struct ClArgs<S: clap::Args, T: Experiment> {
-    /// Which profile to use.  Different profiles allow you to request
-    /// more resources for debugging runs or enable, for example.
-    #[clap(arg_enum, long = "profile", alias="slurmprofile", default_value_t)]
+    /// Which profile to use.  Different profiles allow you to, for example, request
+    /// more resources for debugging runs or enable additional output.
+    #[clap(arg_enum, long = "profile", visible_alias="slurmprofile", default_value_t)]
     profile: Profile,
     #[clap(flatten, next_help_heading="Slurm-Managed")]
     slurm: S,
