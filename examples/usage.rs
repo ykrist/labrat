@@ -1,7 +1,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
-use slurm_harray::*;
-use std::path::{PathBuf, Path};
+use labrat::*;
+use std::path::PathBuf;
 use anyhow::{Result};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
@@ -50,10 +50,10 @@ struct Params {
 }
 
 #[derive(Args, Default, Debug, Clone, Serialize, Deserialize)]
-struct AuxParams {
-    /// Output directory. Files will be placed in DIR/PARAM_NAME/filename
-    #[clap(short='o', value_name="DIR")]
-    output_dir: Option<PathBuf>,
+struct OutputControl {
+    /// Enable additional output. Doesn't affect the experiment, just what is outputted
+    #[clap(long="tracelog")]
+    trace_log: bool,
 }
 
 impl Default for Params {
@@ -70,40 +70,52 @@ impl IdStr for Params {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Outputs {
-    log: PathBuf,
-}
-
-impl NewOutput for Outputs {
-    type Inputs = Inputs;
-    type Params = Params;
-    type AuxParams = AuxParams;
-
-    fn new(inputs: &Inputs, _params: &Params, _aux: &Self::AuxParams) -> Self {
-        let filename = format!("{}-sollog.json", inputs.id_str());
-        Outputs {
-            log: filename.into()
-        }
-    }
+    log: String,
+    #[serde(skip_serializing_if="Option::is_none", default)]
+    trace_log: Option<String>
 }
 
 struct MyExperiment {
-    profile: SlurmProfile,
+    profile: Profile,
     inputs: Inputs,
     params: Params,
-    auxparams: AuxParams,
+    config: OutputControl,
     outputs: Outputs,
 }
 
 impl Experiment for MyExperiment {
-    impl_experiment_helper! {
-      profile;
-      inputs: Inputs;
-      params: Params;
-      outputs: Outputs;
-      auxparams: AuxParams;
+    type Parameters = Params;
+    type Config = OutputControl;
+    type Input = Inputs;
+    type Output = Outputs;
+
+    fn parameter(&self) -> &Self::Parameters { &self.params }
+    
+    fn input(&self) -> &Self::Input { &self.inputs }
+
+    fn output(&self) -> &Self::Output { &self.outputs }
+
+    fn new(
+        profile: Profile,
+        config: Self::Config,
+        inputs: Self::Input,
+        params: Self::Parameters,
+        outputs: Self::Output,
+    ) -> Self {
+        MyExperiment { profile, config, inputs, params, outputs }
     }
 
-    fn log_root_dir() -> PathBuf {
+    fn new_output(inputs: &Inputs, _params: &Params, config: &Self::Config) -> Self::Output {
+        Outputs {
+            log: format!("{}-sollog.json", inputs.id_str()),
+            trace_log: 
+                if config.trace_log { Some(format!("{}-tracelog.json", inputs.id_str())) }
+                else { None }
+            
+        }
+    }
+
+    fn root_dir() -> PathBuf {
         concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
     }
 }
@@ -120,7 +132,7 @@ impl ResourcePolicy for MyExperiment {
 }
 
 fn main() -> Result<()> {
-    let exp: MyExperiment = handle_slurm_args()?;
+    let exp = MyExperiment::from_cl_args_with_slurm()?;
     exp.write_index_file()?;
     exp.write_parameter_file()?;
 

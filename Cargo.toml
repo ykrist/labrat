@@ -1,8 +1,9 @@
 [package]
 authors = ["Me <Me>"]
 edition = "2021"
-name = "slurm-harray"
-version = "0.1.0"
+name = "labrat"
+description = "A small framework for experimental setup."
+version = "1.0.0"
 
 [dependencies]
 anyhow = "^1.0"
