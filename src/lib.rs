@@ -1,3 +1,6 @@
+//! This crate provides small framework for running experiments in local and cluster environments.
+//! 
+//! It is primarily for personal use.
 use anyhow::{Context, Result};
 use clap::Parser;
 use serde::de::DeserializeOwned;
