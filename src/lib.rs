@@ -187,20 +187,24 @@ pub trait IdStr: Serialize {
     }
 }
 
-/// An amount of memory for Slurm.
+/// An amount of memory for Slurm, rounded to mebibytes (2**20 bytes)
 pub struct MemoryAmount(usize);
 
 impl MemoryAmount {
+    pub fn from_bytes(amount : usize) -> Self {
+        MemoryAmount(amount / usize::pow(2, 20))
+    }
+
     pub fn from_mb(amount: usize) -> Self {
         MemoryAmount(amount)
     }
 
     pub fn from_gb(amount: usize) -> Self {
-        MemoryAmount(amount * 1000)
+        MemoryAmount(amount * 1024)
     }
 
     pub fn from_gb_f64(amount: f64) -> Self {
-        MemoryAmount((amount * 1000.0).round() as usize)
+        MemoryAmount((amount * 1024.0).round() as usize)
     }
 
     pub fn as_mb(&self) -> usize {
