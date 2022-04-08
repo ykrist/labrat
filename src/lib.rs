@@ -8,7 +8,6 @@ use sha2::Digest;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufReader, stdout};
-use std::os::unix::io::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::process::exit;
@@ -386,7 +385,7 @@ pub trait ResourcePolicy: Experiment {
     /// and Slurm-related arguments.  May exit the program.
     fn from_cl_args_with_slurm() -> Result<Self> {
         if let Some((read_fd, write_fd)) = check_args_for_slurm_pipe()? {
-            run_pipe_server::<Self>(read_fd, write_fd)?;
+            run_pipe_server::<Self>(&read_fd, &write_fd)?;
             exit(0)
         }
     
@@ -405,7 +404,7 @@ pub trait ResourcePolicy: Experiment {
 
 #[derive(clap::Args, Debug, Clone)]
 struct SlurmArgs {
-    /// Start the Slurm info pipe server with file descriptors R (Reading) and W (Writing)
+    /// Start the Slurm info pipe server with temporary files R (Reading) and W (Writing)
     /// All other arguments are ignored.
     #[allow(dead_code)]
     #[clap(
@@ -414,7 +413,7 @@ struct SlurmArgs {
         value_names=&["R", "W"],
         group("slurm-managed"),
     )]
-    pipe: Option<Vec<RawFd>>,
+    pipe: Option<Vec<String>>,
     /// Print Slurm info as a JSON string and exit.
     #[clap(long = "slurminfo", group("slurm-managed"))]
     info: bool,
@@ -488,12 +487,12 @@ impl<S: clap::Args, T: Experiment> ClArgs<S, T> {
     }
 }
 
-fn run_pipe_server<T>(read_fd: RawFd, write_fd: RawFd) -> Result<()>
+fn run_pipe_server<T>(commands: &str, output: &str) -> Result<()>
 where
     T: ResourcePolicy,
 {
-    let reader: File = unsafe { File::from_raw_fd(read_fd as RawFd) };
-    let writer: File = unsafe { File::from_raw_fd(write_fd as RawFd) };
+    let reader: File = File::open(commands)?;
+    let writer: File = File::open(output)?;
 
     let commands: Vec<Vec<String>> = serde_json::from_reader(reader)?;
     let mut slurm_job_specs = Vec::new();
@@ -508,13 +507,9 @@ where
     Ok(())
 }
 
-fn check_args_for_slurm_pipe() -> Result<Option<(RawFd, RawFd)>> {
-    fn parse_fd(arg: &Option<String>) -> Result<RawFd> {
-        let fd = arg
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("--p-slurminfo takes two integer arguments."))?;
-        fd.parse()
-            .with_context(|| format!("Failed to parse file descriptor `{}`", &fd))
+fn check_args_for_slurm_pipe() -> Result<Option<(String, String)>> {
+    fn parse_filename(arg: Option<String>) -> Result<String> {
+        arg.ok_or_else(|| anyhow::anyhow!("--p-slurminfo takes two filename arguments."))
     }
 
     let mut args = std::env::args();
@@ -535,8 +530,8 @@ fn check_args_for_slurm_pipe() -> Result<Option<(RawFd, RawFd)>> {
     }
 
     if pipe_slurminfo_found {
-        let rd = parse_fd(&rd)?;
-        let wr = parse_fd(&wd)?;
+        let rd = parse_filename(rd)?;
+        let wr = parse_filename(wd)?;
         return Ok(Some((rd, wr)));
     }
     Ok(None)
