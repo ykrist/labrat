@@ -213,7 +213,8 @@ impl MemoryAmount {
 }
 
 /// Slurm email notification events. See the `--mail-type` parameter to [`sbatch`](https://slurm.schedmd.com/sbatch.html)
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum MailType {
     None,
     Begin,
@@ -253,7 +254,7 @@ impl ToString for MailType {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-struct SlurmResources {
+pub struct SlurmResources {
     #[serde(rename = "script")]
     script: String,
     #[serde(rename = "err")]
@@ -273,7 +274,7 @@ struct SlurmResources {
     #[serde(rename = "mail-user", skip_serializing_if = "Option::is_none")]
     mail_user: Option<String>,
     #[serde(rename = "mail-type", skip_serializing_if = "Option::is_none")]
-    mail_type: Option<String>,
+    mail_type: Option<Vec<MailType>>,
     #[serde(rename = "constraint", skip_serializing_if = "Option::is_none")]
     constraint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,8 +300,7 @@ impl SlurmResources {
             if mt.is_empty() {
                 None
             } else {
-                let mt: Vec<_> = mt.into_iter().map(|m| m.to_string()).collect();
-                Some(mt.join(","))
+                Some(mt)
             }
         };
 
