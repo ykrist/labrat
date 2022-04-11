@@ -3,7 +3,7 @@ authors = ["Me <Me>"]
 edition = "2021"
 name = "labrat"
 description = "A small framework for experimental setup."
-version = "1.2.0"
+version = "1.3.0"
 
 [dependencies]
 anyhow = "^1.0"

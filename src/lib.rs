@@ -1,31 +1,31 @@
 //! This crate provides small framework for running experiments in local and cluster environments.
-//! 
+//!
 //! It is primarily for personal use.
 use anyhow::{Context, Result};
 use clap::Parser;
 use serde::de::DeserializeOwned;
 use sha2::Digest;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::fs::File;
-use std::io::{BufReader, stdout};
+use std::io::{stdout, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use std::process::exit;
+use std::time::Duration;
 
 pub use clap::{ArgEnum, Args};
 pub use serde::{Deserialize, Serialize};
 
 fn read_json<T, P>(path: P) -> Result<T>
-    where
-        T: DeserializeOwned,
-        P: AsRef<Path> + Debug,
+where
+    T: DeserializeOwned,
+    P: AsRef<Path> + Debug,
 {
     let file = File::open(&path)
         .map(BufReader::new)
         .with_context(|| format!("unable to read {:?}", &path))?;
-    
+
     let x: T = serde_json::from_reader(file)?;
-    
+
     Ok(x)
 }
 
@@ -38,14 +38,13 @@ pub struct NoConfig;
 /// - **Parameters** These are the inputs which the experiment is trying to test the effects of.  
 /// - **Output** The results of experiment.  Typically, this is a struct whose fields are filenames (without the directory)
 ///     The filenames refer to files placed in the output directory.
-/// - **Config** These are parameters that control *what* is output, but not how the experiment runs.  For example, part of a 
+/// - **Config** These are parameters that control *what* is output, but not how the experiment runs.  For example, part of a
 ///     Config struct might be a flag which controls whether an output file is present or not.
-/// 
-/// Experiments are associated with a directory structure: `ROOT/PARAM_ID/` where `PARAM_ID` is the string produced by 
-/// `Self::Parameters::id_str()` (see [`IdStr`]). `ROOT` is the directory produced by `root_dir()`. 
-/// 
-pub trait Experiment: Sized
-{
+///
+/// Experiments are associated with a directory structure: `ROOT/PARAM_ID/` where `PARAM_ID` is the string produced by
+/// `Self::Parameters::id_str()` (see [`IdStr`]). `ROOT` is the directory produced by `root_dir()`.
+///
+pub trait Experiment: Sized {
     type Input: Args + Serialize + DeserializeOwned + IdStr;
     type Parameters: Args + Serialize + DeserializeOwned + IdStr;
     type Config: Args + Default;
@@ -71,7 +70,11 @@ pub trait Experiment: Sized
 
     /// Derive the output from input, parameters and config.  This is not included in [`Experiment::new()`], since
     /// and experiment constructed from parts may be read from parts.
-    fn new_output(inputs: &Self::Input, params: &Self::Parameters, config: &Self::Config) -> Self::Output;
+    fn new_output(
+        inputs: &Self::Input,
+        params: &Self::Parameters,
+        config: &Self::Config,
+    ) -> Self::Output;
 
     /// The root directory for outputs
     fn root_dir() -> PathBuf;
@@ -86,7 +89,7 @@ pub trait Experiment: Sized
     }
 
     /// Given a base filename, return the full path to where the file should be placed.  
-    /// 
+    ///
     /// Eg, for `filename`, returns `ROOT/PARAM_ID/filename`
     fn get_output_path(&self, filename: &str) -> PathBuf {
         let mut log_dir = Self::root_dir();
@@ -96,10 +99,9 @@ pub trait Experiment: Sized
         log_dir
     }
 
-
-    /// Given a base filename, return the full path to where the file should be placed.  The filename 
+    /// Given a base filename, return the full path to where the file should be placed.  The filename
     /// is first prefixed with `self.input().id_str()`.
-    /// 
+    ///
     /// Eg, if `filename` is `-hello.txt`, returns `ROOT/PARAM_ID/INPUT_ID-hello.txt`
     fn get_output_path_prefixed(&self, filename: &str) -> PathBuf {
         let mut log_dir = Self::root_dir();
@@ -158,7 +160,7 @@ pub trait Experiment: Sized
     }
 }
 
-/// A helper function for quickly implementing [`IdStr`] for types 
+/// A helper function for quickly implementing [`IdStr`] for types
 /// which are [`Serialize`].  Note this may produce collisions, but it is
 /// extremely unlikely.
 pub fn id_from_serialised<T: Serialize + ?Sized>(val: &T) -> String {
@@ -178,7 +180,6 @@ fn ensure_directory_exists(path: impl AsRef<Path>) -> Result<PathBuf> {
     return Ok(path.as_ref().canonicalize().unwrap());
 }
 
-
 /// Has a filename-friendly string ID.
 pub trait IdStr: Serialize {
     fn id_str(&self) -> String {
@@ -190,7 +191,7 @@ pub trait IdStr: Serialize {
 pub struct MemoryAmount(usize);
 
 impl MemoryAmount {
-    pub fn from_bytes(amount : usize) -> Self {
+    pub fn from_bytes(amount: usize) -> Self {
         MemoryAmount(amount / usize::pow(2, 20))
     }
 
@@ -212,8 +213,8 @@ impl MemoryAmount {
 }
 
 /// Slurm email notification events. See the `--mail-type` parameter to [`sbatch`](https://slurm.schedmd.com/sbatch.html)
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all="SCREAMING_SNAKE_CASE")]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MailType {
     None,
     Begin,
@@ -230,10 +231,10 @@ pub enum MailType {
     ArrayTasks,
 }
 
-impl ToString for MailType {
-    fn to_string(&self) -> String {
+impl Display for MailType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use MailType::*;
-        match self {
+        let s = match self {
             None => "NONE",
             Begin => "BEGIN",
             End => "END",
@@ -247,39 +248,39 @@ impl ToString for MailType {
             TimeLimit80 => "TIME_LIMIT_80",
             TimeLimit50 => "TIME_LIMIT_50",
             ArrayTasks => "ARRAY_TASKS",
-        }
-        .to_owned()
+        };
+        f.write_str(s)
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SlurmResources {
     #[serde(rename = "script")]
-    script: String,
-    #[serde(rename = "err")]
-    log_err: PathBuf,
+    pub script: String,
+    #[serde(rename = "err", skip_serializing_if = "Option::is_none")]
+    pub log_err: Option<PathBuf>,
     #[serde(rename = "out")]
-    log_out: PathBuf,
+    pub log_out: PathBuf,
     #[serde(rename = "job-name", skip_serializing_if = "Option::is_none")]
-    job_name: Option<String>,
+    pub job_name: Option<String>,
     #[serde(rename = "cpus-per-task")]
-    cpus: usize,
+    pub cpus: usize,
     #[serde(rename = "nodes")]
-    nodes: usize,
+    pub nodes: usize,
     #[serde(rename = "time")]
-    time: String,
+    pub time: String,
     #[serde(rename = "mem")]
-    memory: String,
+    pub memory: String,
     #[serde(rename = "mail-user", skip_serializing_if = "Option::is_none")]
-    mail_user: Option<String>,
+    pub mail_user: Option<String>,
     #[serde(rename = "mail-type", skip_serializing_if = "Option::is_none")]
-    mail_type: Option<Vec<MailType>>,
+    pub mail_type: Option<Vec<MailType>>,
     #[serde(rename = "constraint", skip_serializing_if = "Option::is_none")]
-    constraint: Option<String>,
+    pub constraint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    exclude: Option<String>,
-    #[serde(rename = "constraint", skip_serializing_if = "Option::is_none")]
-    nodelist: Option<String>,
+    pub exclude: Option<String>,
+    #[serde(rename = "nodelist", skip_serializing_if = "Option::is_none")]
+    pub nodelist: Option<String>,
 }
 
 fn fmt_as_slurm_time(mut secs: u64) -> String {
@@ -307,7 +308,7 @@ impl SlurmResources {
             time: fmt_as_slurm_time(exp.time().as_secs()),
             memory: format!("{}MB", exp.memory().as_mb()),
             script: exp.script(),
-            log_err: exp.log_err(),
+            log_err: Some(exp.log_err()),
             log_out: exp.log_out(),
             job_name: exp.job_name(),
             mail_user: exp.mail_user(),
@@ -326,7 +327,7 @@ impl SlurmResources {
 pub trait ResourcePolicy: Experiment {
     /// The Slurm script loaded as a string.
     fn script(&self) -> String;
-    
+
     /// Time limit for this job
     fn time(&self) -> Duration;
 
@@ -334,10 +335,14 @@ pub trait ResourcePolicy: Experiment {
     fn memory(&self) -> MemoryAmount;
 
     /// Number of CPUs
-    fn cpus(&self) -> usize { 1 }
+    fn cpus(&self) -> usize {
+        1
+    }
 
     /// Number of compute nodes
-    fn nodes(&self) -> usize { 1 }
+    fn nodes(&self) -> usize {
+        1
+    }
 
     /// The job name.  The default is the parameter ID-string.
     fn job_name(&self) -> Option<String> {
@@ -369,35 +374,35 @@ pub trait ResourcePolicy: Experiment {
         None
     }
 
-    /// Path to place STDERR log. Should be an absolute path.  [`Experiment::get_output_path`] or 
+    /// Path to place STDERR log. Should be an absolute path.  [`Experiment::get_output_path`] or
     /// [`Experiment::get_output_path_prefixed`] may be helpful.
     fn log_err(&self) -> PathBuf {
         self.get_output_path_prefixed(".err")
     }
 
-    /// Path to place STDERR log. Should be an absolute path.  [`Experiment::get_output_path`] or 
+    /// Path to place STDERR log. Should be an absolute path.  [`Experiment::get_output_path`] or
     /// [`Experiment::get_output_path_prefixed`] may be helpful.
     fn log_out(&self) -> PathBuf {
         self.get_output_path_prefixed(".out")
     }
 
-    /// Parse command-line arguments for inputs, parameters and config, before handling 
+    /// Parse command-line arguments for inputs, parameters and config, before handling
     /// and Slurm-related arguments.  May exit the program.
     fn from_cl_args_with_slurm() -> Result<Self> {
         if let Some((read_fd, write_fd)) = check_args_for_slurm_pipe()? {
             run_pipe_server::<Self>(&read_fd, &write_fd)?;
             exit(0)
         }
-    
+
         let args = ClArgs::<SlurmArgs, Self>::parse();
         let slurm_info = args.slurm.info;
         let exp = args.into_experiment()?;
-    
+
         if slurm_info {
             serde_json::to_writer_pretty(stdout(), &SlurmResources::new(&exp))?;
             exit(0);
         }
-    
+
         Ok(exp)
     }
 }
@@ -434,14 +439,19 @@ struct NoSlurmArgs {}
 #[clap(
     setting(clap::AppSettings::DeriveDisplayOrder),
     next_line_help(true),
-    help_template="{usage-heading}\n    {usage}\n\n{all-args}{after-help}"
+    help_template = "{usage-heading}\n    {usage}\n\n{all-args}{after-help}"
 )]
 struct ClArgs<S: clap::Args, T: Experiment> {
     /// Which profile to use.  Different profiles allow you to, for example, request
     /// more resources for debugging runs or enable additional output.
-    #[clap(arg_enum, long = "profile", visible_alias="slurmprofile", default_value_t)]
+    #[clap(
+        arg_enum,
+        long = "profile",
+        visible_alias = "slurmprofile",
+        default_value_t
+    )]
     profile: Profile,
-    #[clap(flatten, next_help_heading="Slurm-Managed")]
+    #[clap(flatten, next_help_heading = "Slurm-Managed")]
     slurm: S,
     #[clap(flatten, next_help_heading = "Input")]
     inputs: T::Input,
@@ -449,7 +459,12 @@ struct ClArgs<S: clap::Args, T: Experiment> {
     parameters: T::Parameters,
     #[clap(flatten, next_help_heading = "Config")]
     config: T::Config,
-    #[clap(long, short = 'l', value_name = "json file", help_heading="Parameters")]
+    #[clap(
+        long,
+        short = 'l',
+        value_name = "json file",
+        help_heading = "Parameters"
+    )]
     /// Load parameters from file.  All other parameter arguments will be ignored.
     load_params: Option<PathBuf>,
 }
@@ -492,12 +507,13 @@ where
     T: ResourcePolicy,
 {
     let reader: File = File::open(commands)?;
-    let writer: File = File::open(output)?;
+    let writer: File = File::options().append(true).open(output)?;
 
     let commands: Vec<Vec<String>> = serde_json::from_reader(reader)?;
     let mut slurm_job_specs = Vec::new();
 
-    for cmd in commands { // cmd is expected to have an argv[0] which is ignored.
+    for cmd in commands {
+        // cmd is expected to have an argv[0] which is ignored.
         let args = ClArgs::<NoSlurmArgs, T>::try_parse_from(cmd)?;
         let exp: T = args.into_experiment()?;
         slurm_job_specs.push(SlurmResources::new(&exp))
@@ -520,7 +536,9 @@ fn check_args_for_slurm_pipe() -> Result<Option<(String, String)>> {
 
     while let Some(s) = args.next() {
         if s == "--p-slurminfo" {
-            if pipe_slurminfo_found { anyhow::bail!("--p-slurminfo supplied multiple times") }
+            if pipe_slurminfo_found {
+                anyhow::bail!("--p-slurminfo supplied multiple times")
+            }
             pipe_slurminfo_found = true;
             rd = args.next();
             wd = args.next();
